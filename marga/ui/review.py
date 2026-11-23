@@ -6,15 +6,15 @@ import base64
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, latex, synctex
+from marga.core import actions, latex, outline, synctex
 from marga.core import pdf as pdfmod
 from marga.core.anchors import anchor_from_offsets, lines_anchor, make_anchor
-from marga.core.diffing import diff_rows
+from marga.core.diffing import DiffRow, diff_rows
 from marga.core.models import (
     AGENT_STATUSES,
     ANNOTATION_TYPES,
@@ -28,8 +28,17 @@ from marga.core.models import (
     Document,
     Version,
 )
+from marga.core.outline import Outline, Section
 from marga.core.textmap import find_phrase, latex_to_plain, line_end, line_starts
-from marga.core.versions import blob_path, get_version, load_versions, previous_version, version_text
+from marga.core.versions import (
+    blob_path,
+    get_version,
+    load_versions,
+    manifest_hash,
+    previous_version,
+    version_text,
+    version_texts,
+)
 from marga.core.workspace import MargaError, Workspace
 from marga.ui import state
 from marga.ui.components import event, pdf_view, source_view
@@ -39,6 +48,8 @@ SIDES = ("L", "R")
 SOURCE_HEIGHT = 640
 ZOOM = 2.0
 KIND_ICON = {"latex": "📄", "pdf": "📕", "text": "📝"}
+BIG_PDF_PAGES = 120  # acima disso, o texto de um PDF avulso aparece por seção ou em blocos de páginas
+PAGE_CHUNK = 20
 
 
 @dataclass
@@ -73,6 +84,54 @@ def _page_count(path: str, mtime: float) -> int:
 @st.cache_data(max_entries=512, show_spinner=False)
 def _page_size(path: str, mtime: float, page: int) -> tuple[float, float]:
     return pdfmod.page_size(path, page)
+
+
+@st.cache_data(max_entries=128, show_spinner="Lendo as seções do PDF…")
+def _pdf_outline(root: str, sha: str) -> dict:
+    return outline.for_pdf(Workspace(root), sha).to_dict()
+
+
+@st.cache_data(max_entries=128, show_spinner="Localizando as seções no PDF…")
+def _build_outline(root: str, doc_id: str, n: int, main: str, pdf: str, mtime: float) -> dict:
+    ws = Workspace(root)
+    result = latex.load_result(ws, doc_id, n)
+    return outline.for_build(ws, ws.get_doc(doc_id), get_version(ws, doc_id, n), result).to_dict()
+
+
+@st.cache_data(max_entries=64, show_spinner=False)
+def _source_sections(root: str, doc_id: str, n: int, main: str, files_key: str) -> list[dict]:
+    ws = Workspace(root)
+    doc = ws.get_doc(doc_id)
+    texts = version_texts(ws, doc, get_version(ws, doc_id, n))
+    return [asdict(s) for s in outline.latex_sections(texts, main, doc.root)]
+
+
+def _outline(ws: Workspace, v: View, result) -> Outline:
+    """Seções do PDF mostrado (PDF avulso ou LaTeX compilado); vazio quando não há o que mostrar."""
+    try:
+        if v.doc.kind == "pdf":
+            return Outline.from_dict(_pdf_outline(str(ws.root), v.version.files[v.doc.root]))
+        if v.doc.kind == "latex" and result is not None and result.has_pdf:
+            mtime = Path(result.pdf).stat().st_mtime
+            return Outline.from_dict(_build_outline(str(ws.root), v.doc.id, v.n, v.doc.main or "", result.pdf, mtime))
+    except Exception as exc:  # noqa: BLE001 - as seções são um atalho; nunca derrubam a revisão
+        st.caption(f"⚠️ Não consegui ler as seções: {exc}")
+    return Outline()
+
+
+def _latex_sections(ws: Workspace, v: View) -> list[Section]:
+    if v.doc.kind != "latex" or not v.doc.main:
+        return []
+    try:
+        data = _source_sections(str(ws.root), v.doc.id, v.n, v.doc.main, manifest_hash(v.version.files))
+    except Exception:  # noqa: BLE001
+        return []
+    return [Section.from_dict(d) for d in data]
+
+
+def _section_label(sec: Section, page: bool = True) -> str:
+    indent = " " * (max(1, sec.level) - 1)  # espaço largo: o HTML não o colapsa
+    return f"{indent}{short(sec.title, 70)}" + (f" · p. {sec.page}" if page and sec.page else "")
 
 
 def _rev(payload) -> str:
@@ -164,7 +223,8 @@ def _compile(ws: Workspace, views: list[View], force: bool) -> None:
         st.warning("latexmk não está no PATH; instale o TeX Live para compilar.")
         return
     names = " e ".join(f"{d.id} v{ver.n}" for d, ver in jobs)
-    with st.spinner(f"Compilando {names}{' em paralelo' if len(jobs) > 1 else ''}…"):
+    with st.spinner(f"Compilando {names}{' em paralelo' if len(jobs) > 1 else ''}… "
+                    "(documentos com muitas figuras levam alguns minutos na primeira vez)"):
         results = latex.compile_many(ws, jobs, force=force)
     for (doc, ver), res in zip(jobs, results):
         if isinstance(res, Exception):
@@ -211,8 +271,11 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
     doc = v.doc
     files = sorted(v.version.files)
     file = files[0]
+    key_file = f"{v.side}_file_{doc.id}_{v.n}"
+    secs = _latex_sections(ws, v)
+    pick_file, pick_section = (st.columns([3, 2], vertical_alignment="bottom") if len(files) > 1 and secs
+                               else (st.container(), st.container()))
     if len(files) > 1:
-        key_file = f"{v.side}_file_{doc.id}_{v.n}"
         if ss.get(key_file) not in files:
             ss[key_file] = doc.main if doc.main in files else files[0]
         counts: dict[str, int] = {}
@@ -220,14 +283,19 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
             an = a.anchor_at(v.n)
             if an and a.is_open:
                 counts[an.file] = counts.get(an.file, 0) + 1
-        file = st.selectbox("Arquivo", files, key=key_file, label_visibility="collapsed",
-                            format_func=lambda p: _doc_rel(doc, p) + (f"  · {counts[p]} 💬" if counts.get(p) else ""))
+        file = pick_file.selectbox("Arquivo", files, key=key_file, label_visibility="collapsed",
+                                   format_func=lambda p: _doc_rel(doc, p) + (f"  · {counts[p]} 💬" if counts.get(p) else ""))
+    if secs:
+        _section_jump(pick_section, ws, v, secs, key_file)
     text = version_text(ws, doc, v.version, file)
     prev = previous_version(ws, doc.id, v.n) if show_diff else None
     old = None
     if prev is not None:
         old = version_text(ws, doc, prev, file) if file in prev.files else ""
     rows = diff_rows(old, text)
+    span = None
+    if doc.kind == "pdf":
+        rows, span = _pdf_range(ws, v, rows)
 
     sel = state.get_selection(doc.id)
     sel_payload = None
@@ -251,6 +319,8 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
     added = sum(1 for r in rows if r.kind == "add")
     removed = sum(1 for r in rows if r.kind == "del")
     info = [f"v{v.n}", f"{len(files)} arquivo(s)"]
+    if span:
+        info.append(f"páginas {span[0]}–{span[1]} de {span[2]}")
     if prev is not None:
         info.append(f"diff vs v{prev.n}: +{added} −{removed}")
     if v.n != v.latest.n:
@@ -269,6 +339,93 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
     if ev and state.fresh(ev.get("nonce")):
         ss["focus_ann"] = ev.get("id")
         st.rerun()
+
+
+def _section_jump(container, ws: Workspace, v: View, secs: list[Section], key_file: str) -> None:
+    """Fonte LaTeX: escolher uma seção abre o arquivo dela na linha do título (e leva o PDF junto)."""
+    key = f"{v.side}_jump_{v.doc.id}_{v.n}"
+    if not isinstance(st.session_state.get(key), int):
+        st.session_state[key] = -1
+    container.selectbox(
+        "Ir para seção", [-1, *range(len(secs))], key=key, label_visibility="collapsed",
+        format_func=lambda i: (f"§ Ir para seção… ({len(secs)})" if i < 0
+                               else f"{_section_label(secs[i], page=False)} · {Path(secs[i].file).name}:{secs[i].line}"),
+        on_change=_jump_to_section, args=(ws, v.doc.id, v.n, key, key_file, [(s.file, s.line) for s in secs]),
+    )
+
+
+def _jump_to_section(ws: Workspace, doc_id: str, n: int, key: str, key_file: str, targets: list[tuple]) -> None:
+    ss = st.session_state
+    i = ss.get(key)
+    ss[key] = -1  # volta a ser um atalho
+    if not isinstance(i, int) or i < 0:
+        return
+    file, line = targets[i]
+    ss[key_file] = file
+    state.set_focus(doc_id, file, line)
+    _follow(doc_id, n, file)
+    page = _section_page(ws, doc_id, n, file, line)
+    for side in SIDES:
+        showing_pdf = (ss.get(f"{side}_doc") == doc_id and ss.get(f"{side}_ver_{doc_id}") == n
+                       and ss.get(f"{side}_mode_{doc_id}") == "PDF")
+        if page and showing_pdf:
+            state.request(f"{side}_page_{doc_id}_{n}", page)
+
+
+def _section_page(ws: Workspace, doc_id: str, n: int, file: str, line: int) -> int | None:
+    result = latex.load_result(ws, doc_id, n)
+    if result is None or not result.has_pdf:
+        return None
+    try:
+        data = _build_outline(str(ws.root), doc_id, n, ws.get_doc(doc_id).main or "", result.pdf,
+                              Path(result.pdf).stat().st_mtime)
+    except Exception:  # noqa: BLE001
+        return None
+    return next((s.get("page") for s in data["sections"] if s.get("file") == file and s.get("line") == line), None)
+
+
+def _pdf_range(ws: Workspace, v: View, rows: list[DiffRow]) -> tuple[list[DiffRow], tuple[int, int, int] | None]:
+    """Texto de PDF avulso: filtra as linhas por seção (ou por bloco de páginas, em PDFs grandes)."""
+    ss = st.session_state
+    pt = _pdf_text(ws, v)
+    total = max((info["page"] for info in pt.lines), default=1)
+    secs = [s for s in _outline(ws, v, None).sections if s.page]
+    big = total > BIG_PDF_PAGES
+    options: dict[str, tuple[str, int, int]] = {}
+    if not big:
+        options["all"] = (f"Documento inteiro · {total} p.", 1, total)
+    for i, sec in enumerate(secs):
+        a, b = outline.page_span(secs, i, total)
+        options[f"s{i}"] = (f"{_section_label(sec, page=False)} · p. {a}" + (f"–{b}" if b > a else ""), a, b)
+    if (big or not secs) and total > PAGE_CHUNK:
+        for a in range(1, total + 1, PAGE_CHUNK):
+            b = min(total, a + PAGE_CHUNK - 1)
+            options[f"p{a}"] = (f"Páginas {a}–{b}", a, b)
+    if len(options) < 2:
+        return rows, None
+    key = f"{v.side}_rng_{v.doc.id}_{v.n}"
+    if ss.get(key) not in options:
+        ss[key] = next(iter(options))
+    focus, seen = ss.get("focus"), f"_{key}_focus"
+    if focus and focus["doc"] == v.doc.id and focus["nonce"] != ss.get(seen):
+        ss[seen] = focus["nonce"]  # foco novo (PDF, 📍 Ir): mostra o trecho que contém a linha
+        page = pt.page_of_line(focus["line"])
+        _, a, b = options[ss[key]]
+        fits = [k for k, (_, a2, b2) in options.items() if page and a2 <= page <= b2]
+        if page and not a <= page <= b and fits:
+            ss[key] = min(fits, key=lambda k: options[k][2] - options[k][1])
+    choice = st.selectbox("Trecho", list(options), key=key, label_visibility="collapsed",
+                          format_func=lambda k: ("§ " if k.startswith("s") else "") + options[k][0])
+    _, a, b = options[choice]
+    if (a, b) == (1, total):
+        return rows, None
+    kept, page = [], 1
+    for r in rows:
+        if r.new:
+            page = pt.page_of_line(r.new) or page
+        if a <= page <= b:
+            kept.append(r)
+    return kept, (a, b, total)
 
 
 # ================================================================== PDF
@@ -304,14 +461,18 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
     key_page = f"{v.side}_page_{doc.id}_{v.n}"
     if not isinstance(ss.get(key_page), int) or not 1 <= ss[key_page] <= total:
         ss[key_page] = 1
-    nav = st.columns([1, 2, 1, 4], vertical_alignment="center")
+    found = _outline(ws, v, result)
+    secs = [s for s in found.sections if s.page and s.page <= total]
+    nav = st.columns([1, 2, 1, 1.6, 7.4] if secs else [1, 2, 1, 4], vertical_alignment="center")
     nav[0].button("◀", key=f"{key_page}_prev", on_click=_shift_page, args=(key_page, -1, total),
                   disabled=ss[key_page] <= 1)
     nav[1].number_input("Página", min_value=1, max_value=total, step=1, key=key_page, label_visibility="collapsed")
     nav[2].button("▶", key=f"{key_page}_next", on_click=_shift_page, args=(key_page, 1, total),
                   disabled=ss[key_page] >= total)
-    nav[3].caption(f"de {total} · v{v.n}" + (" · PDF avulso" if doc.kind == "pdf" else ""))
+    nav[3].caption(f"de {total}" if secs else f"de {total} · v{v.n}" + (" · PDF avulso" if doc.kind == "pdf" else ""))
     page = int(ss[key_page])
+    if secs:
+        _section_picker(nav[4], v, secs, found.source_label, key_page, page)
 
     width, height = _page_size(str(pdf_path), mtime, page)
     rects = _pdf_rects(ws, v, pdf_path, result, page)
@@ -331,6 +492,36 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
     if ev and state.fresh(ev.get("nonce")):
         ss["focus_ann"] = ev.get("id")
         st.rerun()
+
+
+def _section_picker(container, v: View, secs: list[Section], source_label: str, key_page: str, page: int) -> None:
+    """PDF: lista de seções que acompanha a página atual; escolher uma pula para ela."""
+    ss = st.session_state
+    key = f"{v.side}_sec_{v.doc.id}_{v.n}"
+    here = outline.section_at(secs, page)
+    current = ss.get(key)
+    valid = isinstance(current, int) and (
+        (current == -1 and here is None) or (0 <= current < len(secs) and outline.contains(secs, current, page)))
+    if not valid:
+        ss[key] = -1 if here is None else here
+    container.selectbox(
+        "Seção", [-1, *range(len(secs))], key=key, label_visibility="collapsed",
+        format_func=lambda i: f"§ {len(secs)} seções ({source_label})" if i < 0 else _section_label(secs[i]),
+        on_change=_goto_section, args=(v.doc.id, v.n, key, key_page, [(s.page, s.file, s.line) for s in secs]),
+        help=f"Seções: {source_label}. Digite para filtrar.",
+    )
+
+
+def _goto_section(doc_id: str, n: int, key: str, key_page: str, targets: list[tuple]) -> None:
+    ss = st.session_state
+    i = ss.get(key)
+    if not isinstance(i, int) or i < 0:
+        return
+    page, file, line = targets[i]
+    ss[key_page] = page
+    if file and line:  # LaTeX: o fonte (na outra coluna) vai para o título da seção
+        state.set_focus(doc_id, file, line)
+        _follow(doc_id, n, file)
 
 
 def _merge(boxes: list[tuple]) -> list[tuple]:

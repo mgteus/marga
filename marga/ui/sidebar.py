@@ -8,11 +8,15 @@ from pathlib import Path
 import streamlit as st
 
 from marga.core import actions, latex
-from marga.core.versions import doc_status, latest_version
+from marga.core.pdf import page_count
+from marga.core.versions import blob_path, doc_status, latest_version
 from marga.core.workspace import MARGA_DIR, MargaError, Workspace
 from marga.ui import state
+from marga.ui.render import short
 
 KIND_ICON = {"latex": "📄", "pdf": "📕", "text": "📝"}
+ADD_FROM = {"enviar": "Enviar", "workspace": "Pasta", "disco": "Disco"}
+UPLOAD_TYPES = ["zip", "pdf", "tex", "md", "txt"]
 
 
 def render(default_path: str) -> Workspace | None:
@@ -57,7 +61,10 @@ def _documents(root: str) -> None:
     for doc in docs:
         status = doc_status(ws, doc)
         n = status.latest.n if status.latest else 0
-        st.markdown(f"{KIND_ICON.get(doc.kind, '📄')} **{doc.id}** · {doc.name} · v{n}")
+        extra = ""
+        if doc.kind == "pdf" and status.latest and doc.root in status.latest.files:
+            extra = f" · {_pdf_pages(root, status.latest.files[doc.root])} p."
+        st.markdown(f"{KIND_ICON.get(doc.kind, '📄')} **{doc.id}** · {doc.name} · v{n}{extra}")
         if status.dirty:
             st.caption(f"⚠️ {len(status.changed)} arquivo(s) mudaram no disco desde a v{n}")
             if st.button(f"Registrar v{n + 1}", key=f"reg_{doc.id}", type="primary"):
@@ -70,35 +77,88 @@ def _documents(root: str) -> None:
                     st.rerun(scope="app")
 
 
+@st.cache_data(max_entries=256, show_spinner=False)
+def _pdf_pages(root: str, sha: str) -> int:
+    return page_count(blob_path(Workspace(root), sha))
+
+
+def _size(nbytes: int) -> str:
+    return f"{nbytes / 1024**2:.1f} MB".replace(".", ",") if nbytes >= 1024**2 else f"{max(1, nbytes // 1024)} KB"
+
+
+def _added(doc, clear: list[str] | None = None) -> None:
+    """Depois de adicionar: limpa os campos, mostra o documento na coluna da esquerda e avisa."""
+    for key in clear or []:
+        state.request(key, "")
+    state.request("L_doc", doc.id)
+    state.flash("ok", f"{doc.label} adicionado · {doc.kind_label} · v1")
+    st.rerun()
+
+
 def _add_document(ws: Workspace) -> None:
     with st.expander("➕ Adicionar documento"):
-        candidates = actions.discover(ws)
-        if candidates:
-            idx = st.selectbox("Encontrados no workspace", range(len(candidates)),
-                               format_func=lambda i: candidates[i].label, key="add_choice")
-            name = st.text_input("Nome (opcional)", key="add_name")
-            if st.button("Adicionar", type="primary", key="add_go"):
-                cand = candidates[idx]
-                try:
-                    doc = actions.add_document(ws, cand.path, kind=cand.kind, name=name or None, main=cand.main)
-                except MargaError as exc:
-                    st.error(str(exc))
-                else:
-                    state.request("add_name", "")
-                    state.flash("ok", f"{doc.label} adicionado (v1)")
-                    st.rerun()
+        source = st.segmented_control("Origem", list(ADD_FROM), key="add_from", default="enviar",
+                                      format_func=ADD_FROM.get, label_visibility="collapsed") or "enviar"
+        if source == "enviar":
+            _add_upload(ws)
+        elif source == "workspace":
+            _add_found(ws)
         else:
-            st.caption("Nenhuma pasta LaTeX, PDF ou arquivo de texto novo encontrado.")
-        upload = st.file_uploader("…ou envie um arquivo", type=["pdf", "tex", "md", "txt"], key="add_upload")
-        if upload is not None and st.button("Adicionar arquivo enviado", key="add_up_go"):
+            _add_from_disk(ws)
+
+
+def _add_upload(ws: Workspace) -> None:
+    ss = st.session_state
+    n = ss.setdefault("add_up_n", 0)  # trocar a chave limpa o campo de envio depois de adicionar
+    upload = st.file_uploader("Arquivo", type=UPLOAD_TYPES, key=f"add_upload_{n}", label_visibility="collapsed")
+    if upload is None:
+        st.caption("📦 Um .zip baixado do Overleaf vira um documento LaTeX com todos os .tex, a bibliografia "
+                   "e as figuras. Também aceita .pdf, .tex, .md e .txt.")
+        return
+    name = st.text_input("Nome no Marga (opcional)", key=f"add_up_name_{n}", placeholder=upload.name)
+    if st.button(f"Adicionar {short(upload.name, 34)} · {_size(upload.size)}", type="primary",
+                 key=f"add_up_go_{n}", width="stretch"):
+        with st.spinner(f"Importando {upload.name}…"):
             try:
-                rel = actions.save_upload(ws, upload.name, upload.getvalue())
-                doc = actions.add_document(ws, rel)
+                doc = actions.import_upload(ws, upload.name, upload, name=name.strip() or None)
             except MargaError as exc:
                 st.error(str(exc))
-            else:
-                state.flash("ok", f"{doc.label} adicionado a partir de {rel}")
-                st.rerun()
+                return
+        ss["add_up_n"] = n + 1
+        _added(doc)
+
+
+def _add_found(ws: Workspace) -> None:
+    candidates = actions.discover(ws)
+    if not candidates:
+        st.caption("Nenhuma pasta LaTeX, PDF ou arquivo de texto novo nesta pasta.")
+        return
+    idx = st.selectbox("Encontrados no workspace", range(len(candidates)), key="add_choice",
+                       format_func=lambda i: candidates[i].label)
+    cand = candidates[min(idx or 0, len(candidates) - 1)]
+    name = st.text_input("Nome no Marga (opcional)", key="add_ws_name", placeholder=Path(cand.path).name)
+    if st.button(f"Adicionar {short(cand.path, 40)}", type="primary", key="add_ws_go", width="stretch"):
+        try:
+            doc = actions.add_document(ws, cand.path, kind=cand.kind, name=name.strip() or None, main=cand.main)
+        except MargaError as exc:
+            st.error(str(exc))
+            return
+        _added(doc, clear=["add_ws_name"])
+
+
+def _add_from_disk(ws: Workspace) -> None:
+    raw = st.text_input("Caminho do arquivo", key="add_disk_path", placeholder="~/Downloads/projeto-overleaf.zip")
+    name = st.text_input("Nome no Marga (opcional)", key="add_disk_name")
+    st.caption("Para arquivos grandes: o Marga lê direto do disco. Um .zip é extraído em uploads/; "
+               ".pdf, .tex, .md e .txt de fora do workspace são copiados para lá.")
+    if st.button("Importar", type="primary", key="add_disk_go", disabled=not raw.strip(), width="stretch"):
+        with st.spinner("Importando…"):
+            try:
+                doc = actions.import_path(ws, raw, name=name.strip() or None)
+            except MargaError as exc:
+                st.error(str(exc))
+                return
+        _added(doc, clear=["add_disk_path", "add_disk_name"])
 
 
 def _settings(ws: Workspace) -> None:

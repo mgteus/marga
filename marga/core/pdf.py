@@ -13,6 +13,8 @@ import pymupdf
 from .workspace import Workspace, read_json, write_json
 
 PAGE_MARKER = "=== página {n} ==="
+# Só texto: com as imagens (padrão do "dict"), um PDF de 130 MB cheio de figuras levava ~15 s em vez de 0,3 s.
+TEXT_FLAGS = pymupdf.TEXTFLAGS_DICT & ~pymupdf.TEXT_PRESERVE_IMAGES
 
 
 def _open(path: str | Path) -> pymupdf.Document:
@@ -143,7 +145,7 @@ def extract_text(path: str | Path) -> PdfText:
         for pno, page in enumerate(doc, start=1):
             lines.append(PAGE_MARKER.format(n=pno))
             info.append({"page": pno, "bbox": None})
-            for block in page.get_text("dict", sort=True)["blocks"]:
+            for block in page.get_text("dict", sort=True, flags=TEXT_FLAGS)["blocks"]:
                 if block.get("type") != 0:
                     continue
                 added = False

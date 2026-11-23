@@ -17,7 +17,7 @@ from .versions import SKIP_DIRS, TEXT_EXTS, manifest_hash, read_blob, working_ma
 from .workspace import MargaError, Workspace, read_json, write_json
 
 ENGINES: dict[str, str] = {"pdflatex": "-pdf", "xelatex": "-pdfxe", "lualatex": "-pdflua"}
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 600  # uma dissertação com ~350 MB de figuras leva ~100 s (4 passadas + bibtex)
 
 DOCCLASS_RE = re.compile(r"^[^%\n]*\\documentclass", re.M)
 _MAGIC = re.compile(r"^\s*%\s*!\s*T[eE]X\s+(?:TS-)?program\s*=\s*([A-Za-z]+)", re.M)
@@ -27,6 +27,7 @@ _WARN = re.compile(
     r"^(?:LaTeX|Package \S+|Class \S+|pdfTeX) [Ww]arning: (?P<msg>.+?)(?: on input line (?P<line>\d+))?\.?\s*$", re.M
 )
 _BOX = re.compile(r"^(?P<msg>(?:Overfull|Underfull) \\[hv]box \([^)]*\)).*? lines? (?P<line>\d+)", re.M)
+_MISSING_FILE = re.compile(r"File `([^']+\.(?:sty|cls|def|clo|fd|bst|cfg))' not found")
 
 
 def tools() -> dict[str, bool]:
@@ -144,6 +145,10 @@ def parse_log(log_text: str, src_dir: Path, doc_root: str) -> tuple[list[LogIssu
         message = m["msg"].strip()
         if file is None:
             message = f"{Path(m['file']).name}: {message}"
+        missing = _MISSING_FILE.search(message)
+        if missing:
+            message += (f" (pacote LaTeX não instalado; para saber qual instalar: "
+                        f"tlmgr search --global --file /{missing.group(1)})")
         key = (file, m["line"], message)
         if key not in seen:
             seen.add(key)
@@ -164,6 +169,17 @@ def _mirror_dirs(src: Path, out: Path) -> None:
         (out / rel).mkdir(parents=True, exist_ok=True)
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """Figuras e outros binários entram como hard link (instantâneo, sem ocupar espaço); textos são copiados."""
+    if Path(src).suffix.lower() not in TEXT_EXTS:
+        try:
+            os.link(src, dst)
+            return
+        except OSError:
+            pass
+    shutil.copy2(src, dst)
+
+
 def materialize(ws: Workspace, doc: Document, version: Version, dest: Path) -> Path:
     """Cópia da pasta do documento com os arquivos de texto daquela versão (figuras vêm da pasta atual)."""
     vhash = manifest_hash(version.files)
@@ -177,7 +193,7 @@ def materialize(ws: Workspace, doc: Document, version: Version, dest: Path) -> P
     def ignore(_dir: str, names: list[str]) -> list[str]:
         return [n for n in names if n.startswith(".") or n in SKIP_DIRS]
 
-    shutil.copytree(src_root, dest, ignore=ignore)
+    shutil.copytree(src_root, dest, ignore=ignore, copy_function=_link_or_copy)
     wanted = {os.path.normpath(p) for p in version.files}
     for path in list(dest.rglob("*")):
         if path.is_file() and path.suffix.lower() in TEXT_EXTS:
@@ -187,6 +203,7 @@ def materialize(ws: Workspace, doc: Document, version: Version, dest: Path) -> P
     for rel, sha in version.files.items():
         target = dest / os.path.relpath(rel, doc.root)
         target.parent.mkdir(parents=True, exist_ok=True)
+        target.unlink(missing_ok=True)  # nunca escrever através de um link para o arquivo de trabalho
         target.write_bytes(read_blob(ws, sha))
     marker.write_text(vhash)
     return dest
@@ -241,6 +258,9 @@ def compile_version(ws: Workspace, doc: Document, version: Version, *, force: bo
     pdf, log = out / f"{stem}.pdf", out / f"{stem}.log"
     log_text = log.read_text(encoding="utf-8", errors="replace") if log.exists() else ""
     errors, warnings = parse_log(log_text, Path(src_dir), doc.root)
+    if (out / f"{stem}.bcf").exists() and shutil.which("biber") is None:
+        errors.append(LogIssue("erro", "O documento usa biblatex com biber, mas o biber não está instalado: "
+                                       "as referências ficam sem bibliografia até instalá-lo."))
     if timed_out:
         errors.insert(0, LogIssue("erro", f"Tempo esgotado ({timeout} s); a compilação foi interrompida."))
     elif proc.returncode != 0 and not errors:

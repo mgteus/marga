@@ -5,9 +5,14 @@ A interface chama só estas funções; elas também são o que os testes exercit
 
 from __future__ import annotations
 
+import io
 import os
+import shlex
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
+from urllib.parse import unquote
 
 from . import anchors as anc
 from .latex import DOCCLASS_RE, detect_engine, find_main_candidates
@@ -23,10 +28,12 @@ from .models import (
     Reply,
     Version,
 )
-from .versions import SKIP_DIRS, doc_status, read_working_text, snapshot, version_texts
+from .versions import SKIP_DIRS, TEXT_EXTS, doc_status, read_working_text, snapshot, version_texts
 from .workspace import MargaError, Workspace
+from .zipimport import extract_zip
 
 TEXT_DOC_EXTS = {".md", ".markdown", ".txt", ".rst"}
+IMPORT_EXTS = {".zip", ".pdf", ".tex", *TEXT_DOC_EXTS}
 
 
 # ------------------------------------------------------------- documentos
@@ -154,20 +161,126 @@ def add_document(ws: Workspace, path: str, kind: str | None = None, name: str | 
     return doc
 
 
-def save_upload(ws: Workspace, filename: str, data: bytes) -> str:
-    """Grava um upload como arquivo novo em ``uploads/`` (nunca sobrescreve) e devolve o caminho relativo."""
-    safe = Path(filename).name.replace(os.sep, "_") or "arquivo"
-    folder = ws.root / "uploads"
-    if Path(safe).suffix.lower() == ".tex":
-        folder = folder / Path(safe).stem
-    folder.mkdir(parents=True, exist_ok=True)
-    target = folder / safe
-    stem, suffix, k = target.stem, target.suffix, 1
+def _safe_name(filename: str) -> str:
+    name = Path(filename.replace("\\", "/")).name.replace("\0", "").strip().lstrip(".")
+    return name or "arquivo"
+
+
+def _unique(path: Path, keep_suffix: bool = True) -> Path:
+    """``path`` ou, se já existir, ``nome-2``, ``nome-3``… (arquivos mantêm a extensão)."""
+    stem, suffix = (path.stem, path.suffix) if keep_suffix else (path.name, "")
+    target, k = path, 1
     while target.exists():
         k += 1
-        target = folder / f"{stem}-{k}{suffix}"
+        target = path.with_name(f"{stem}-{k}{suffix}")
+    return target
+
+
+def _upload_target(ws: Workspace, filename: str) -> Path:
+    safe = _safe_name(filename)
+    folder = ws.root / "uploads"
+    if Path(safe).suffix.lower() == ".tex":  # um .tex avulso ganha a própria pasta (é a raiz do documento)
+        folder = _unique(folder / Path(safe).stem, keep_suffix=False)
+    folder.mkdir(parents=True, exist_ok=True)
+    return _unique(folder / safe)
+
+
+def _discard_import(ws: Workspace, rel: str) -> None:
+    path = ws.abspath(rel)
+    path.unlink(missing_ok=True)
+    parent = path.parent
+    if parent != ws.root / "uploads" and parent.parent == ws.root / "uploads" and not any(parent.iterdir()):
+        parent.rmdir()
+
+
+def save_upload(ws: Workspace, filename: str, data: bytes) -> str:
+    """Grava um upload como arquivo novo em ``uploads/`` (nunca sobrescreve) e devolve o caminho relativo."""
+    target = _upload_target(ws, filename)
     target.write_bytes(data)
     return ws.rel(target)
+
+
+def import_zip(ws: Workspace, source: str | Path | BinaryIO, filename: str, name: str | None = None) -> Document:
+    """Extrai um .zip (ex.: projeto do Overleaf) em ``uploads/<nome do zip>/`` e registra como documento.
+
+    Com um ``.tex`` com ``\\documentclass`` (``main.tex`` primeiro), vira um documento LaTeX com todos os
+    arquivos, figuras e bibliografia; só com textos (.md/.txt), vira um documento de texto.
+    """
+    stem = Path(_safe_name(filename)).stem or "projeto"
+    folder = _unique(ws.root / "uploads" / stem, keep_suffix=False)
+    extract_zip(source, folder)
+    try:
+        rel = ws.rel(folder)
+        if find_main_candidates(folder):
+            return add_document(ws, rel, kind="latex", name=name)
+        if any(p.suffix.lower() in TEXT_EXTS for p in folder.rglob("*") if p.is_file()):
+            return add_document(ws, rel, kind="text", name=name)
+        raise MargaError("O .zip não tem um .tex com \\documentclass nem arquivos de texto para revisar.")
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+
+
+def import_upload(ws: Workspace, filename: str, data: BinaryIO | bytes, name: str | None = None) -> Document:
+    """Arquivo enviado pela interface → documento (o .zip é extraído; os demais vão para ``uploads/``)."""
+    ext = Path(filename).suffix.lower()
+    if ext not in IMPORT_EXTS:
+        raise MargaError(f"Tipo de arquivo não suportado: {filename} (use .zip, .pdf, .tex, .md ou .txt).")
+    if ext == ".zip":
+        return import_zip(ws, io.BytesIO(data) if isinstance(data, bytes) else data, filename, name)
+    rel = save_upload(ws, filename, data if isinstance(data, bytes) else data.getvalue())
+    try:
+        return add_document(ws, rel, name=name)
+    except BaseException:
+        _discard_import(ws, rel)
+        raise
+
+
+def parse_path(ws: Workspace, raw: str) -> Path:
+    """Caminho digitado ou colado: aceita ``~``, aspas, ``file://`` e espaços escapados do terminal."""
+    text = raw.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    if text.startswith("file://"):
+        text = unquote(text[7:])
+    path = Path(text).expanduser()
+    if not path.exists() and "\\" in text:
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            parts = []
+        if len(parts) == 1:
+            path = Path(parts[0]).expanduser()
+    if not path.is_absolute():
+        path = ws.root / path
+    return path
+
+
+def import_path(ws: Workspace, raw: str, name: str | None = None) -> Document:
+    """Importa um arquivo do disco: .zip é extraído; .pdf/.tex/.md/.txt de fora do workspace são copiados."""
+    path = parse_path(ws, raw)
+    if not path.exists():
+        raise MargaError(f"Não encontrei {path}.")
+    if path.is_dir():
+        if ws.contains(path):
+            return add_document(ws, ws.rel(path), name=name)
+        raise MargaError("Pastas fora do workspace não são copiadas: abra a pasta como workspace (campo "
+                         "Workspace, no topo) ou importe um .zip dela.")
+    ext = path.suffix.lower()
+    if ext not in IMPORT_EXTS:
+        raise MargaError(f"Tipo de arquivo não suportado: {path.name} (use .zip, .pdf, .tex, .md ou .txt).")
+    if ext == ".zip":
+        return import_zip(ws, path, path.name, name)
+    if ws.contains(path):
+        return add_document(ws, ws.rel(path), name=name)
+    target = _upload_target(ws, path.name)
+    shutil.copyfile(path, target)
+    rel = ws.rel(target)
+    try:
+        return add_document(ws, rel, name=name)
+    except BaseException:
+        _discard_import(ws, rel)
+        raise
 
 
 def remove_document(ws: Workspace, doc_id: str) -> None:
