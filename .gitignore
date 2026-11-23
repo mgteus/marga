@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+
+# Estado do Marga gerado ao usar/testar workspaces (ex.: examples/demo/.marga)
+.marga/
+uploads/
+
+# Artefatos de LaTeX compilados fora de .marga/build
+*.aux
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.toc
+*.bbl
+*.blg
+*.out
+
+# macOS
+.DS_Store
