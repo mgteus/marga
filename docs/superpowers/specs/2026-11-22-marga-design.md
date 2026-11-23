@@ -1,7 +1,7 @@
 # Marga — design v1
 
 - **Data:** 2026-11-22
-- **Status:** proposta, aguardando aprovação
+- **Status:** aprovado e implementado (v0.1.0)
 - **Stack:** Python 3.13 · Streamlit · PyMuPDF · TeX Live (latexmk + synctex) · uv
 
 ## 1. Objetivo
@@ -71,7 +71,7 @@ tests/                  # pytest: núcleo, integração LaTeX/SyncTeX, smoke do 
 examples/demo/          # workspace de exemplo: artigo/ (multi-arquivo), suplemento/, parecer.pdf
 ```
 
-Os componentes usam o protocolo de custom components v1 do Streamlit (`declare_component(path=...)` + `postMessage`), escritos em JS puro, sem npm.
+Os componentes usam a API de custom components v2 do Streamlit 1.67 (`st.components.v2.component`, sem iframe, eventos via `setTriggerValue`), escritos em JS puro, sem npm.
 
 Armazenamento:
 

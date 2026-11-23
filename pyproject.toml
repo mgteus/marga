@@ -1,0 +1,26 @@
+[project]
+name = "marga"
+version = "0.1.0"
+description = "Revisão de documentos LaTeX, texto e PDF com comentários ancorados, links entre arquivos e pacotes de instruções para agentes LLM."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.40",
+    "pymupdf>=1.24",
+]
+
+[project.scripts]
+marga = "marga.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["marga"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,39 @@
+.mg-pdf { user-select: none; padding-top: 14px; }
+.mg-pdf .mg-page {
+  position: relative;
+  width: 100%;
+  cursor: crosshair;
+  border: 1px solid var(--st-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  background: #fff;
+  touch-action: none;
+}
+.mg-pdf .mg-img { display: block; width: 100%; height: auto; border-radius: 4px; pointer-events: none; }
+.mg-pdf .mg-layer { position: absolute; inset: 0; pointer-events: none; }
+.mg-pdf .mg-rect { position: absolute; border-radius: 2px; }
+.mg-pdf .mg-a { background: rgba(212, 167, 44, 0.26); outline: 1px solid rgba(212, 167, 44, 0.9); }
+.mg-pdf .mg-c { background: rgba(128, 128, 128, 0.14); outline: 1px dashed rgba(128, 128, 128, 0.7); }
+.mg-pdf .mg-m { background: rgba(130, 80, 223, 0.18); outline: 1px solid rgba(130, 80, 223, 0.8); }
+.mg-pdf .mg-sel { background: rgba(56, 139, 253, 0.26); outline: 1.5px solid rgba(56, 139, 253, 0.95); }
+.mg-pdf .mg-focus { outline: 2px solid var(--st-primary-color, #ff4b4b); }
+.mg-pdf .mg-tag {
+  position: absolute;
+  left: -2px;
+  top: -1.45em;
+  padding: 0 5px;
+  border-radius: 8px;
+  font: 600 11px/1.35 var(--st-font, system-ui, -apple-system, sans-serif);
+  white-space: nowrap;
+  background: rgba(212, 167, 44, 0.95);
+  color: #1f2328;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mg-pdf .mg-m .mg-tag { background: rgba(130, 80, 223, 0.92); color: #fff; }
+.mg-pdf .mg-drag {
+  position: absolute;
+  display: none;
+  border: 1.5px dashed rgba(56, 139, 253, 0.95);
+  background: rgba(56, 139, 253, 0.12);
+  pointer-events: none;
+}

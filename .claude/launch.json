@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "marga",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "marga", "examples/demo", "--server.port", "8601", "--server.headless", "true", "--browser.gatherUsageStats", "false"],
+      "port": 8601
+    }
+  ]
+}
