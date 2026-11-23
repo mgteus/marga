@@ -12,6 +12,7 @@ O Marga é um webapp local em Streamlit para revisar projetos LaTeX, arquivos de
 - **Stack:** Python ≥ 3.11 (o ambiente local usa 3.13) · Streamlit 1.67 com componentes v2 · PyMuPDF · TeX Live (`latexmk` + `synctex`), opcional · [uv](https://docs.astral.sh/uv/).
 - **Idioma:** interface, pacote para o agente, mensagens de erro, docstrings, comentários e commits em português; identificadores em inglês.
 - **Design aprovado:** [`docs/superpowers/specs/2026-11-22-marga-design.md`](docs/superpowers/specs/2026-11-22-marga-design.md). O mapa abaixo reflete o código atual, que difere da spec em alguns nomes de arquivo.
+- **Branches:** `feat/…` ou `fix/…` → `dev` → `main`; nunca direto na `main`. Detalhes em [Fluxo de branches](#fluxo-de-branches).
 
 | Tarefa | Comando |
 |---|---|
@@ -241,8 +242,25 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 - Testes opcionais com arquivos reais: `MARGA_ZIP=/caminho/projeto.zip uv run pytest tests/test_zip_import.py -k real -s` e `MARGA_PDF=/caminho/doc.pdf uv run pytest tests/test_outline.py -k real -s`.
 - Mudou a interface? Além do smoke test, suba o servidor (tutorial acima) e repita o fluxo do Passo 4 numa cópia do demo.
 
+## Fluxo de branches
+
+```text
+feat/<nome> ou fix/<nome>  →  dev  →  main
+```
+
+- Toda mudança começa numa branch própria, criada a partir da `dev` atualizada: `feat/<nome>` para recursos novos e `fix/<nome>` para ajustes e correções.
+
+  ```bash
+  git switch dev && git pull && git switch -c feat/<nome>
+  ```
+
+- A branch de trabalho volta para a `dev` por pull request ou merge. Ela nunca vai direto para a `main`.
+- A `main` só recebe a `dev`, quando o usuário pedir e com `uv run pytest -q` passando.
+- Não faça commit direto na `dev` nem na `main`.
+
 ## Antes de entregar
 
+- [ ] O trabalho está numa branch `feat/…` ou `fix/…` criada a partir da `dev`, e não na `dev` ou na `main`.
 - [ ] `uv run pytest -q` passa.
 - [ ] Mudanças de interface foram vistas no navegador, numa cópia do demo.
 - [ ] Mudou o pacote, a resposta, a CLI ou a instalação? README, este arquivo e `RULES`/`AGENT_GUIDE` foram atualizados.
