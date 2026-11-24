@@ -9,10 +9,21 @@ import textwrap
 from pathlib import Path
 
 from .diffing import changes, unified
+from .formats import Extracted
 from .latex import load_result
-from .models import AGENT_STATUSES, REGION_STATES, Annotation, Document, Link, Reply, RoundInfo, now_iso
+from .models import (
+    AGENT_STATUSES,
+    EXTRACTED_KINDS,
+    REGION_STATES,
+    Annotation,
+    Document,
+    Link,
+    Reply,
+    RoundInfo,
+    now_iso,
+)
 from .textmap import excerpt
-from .versions import doc_status, latest_version, previous_version, version_texts
+from .versions import doc_status, extracted_text, latest_version, previous_version, version_texts
 from .workspace import MargaError, Workspace, read_json, write_json, write_text
 
 BUNDLE_SCHEMA = "marga.bundle/v1"
@@ -35,9 +46,32 @@ RULES = [
     "revise-o se a origem mudar. mover: leve o conteúdo da origem para o destino. contradiz: resolva a "
     "contradição. ver também: só contexto.",
     "Mantenha o LaTeX compilável: ambientes balanceados, comandos e referências existentes.",
-    "PDF avulso não tem fonte para editar: devolva o texto corrigido no campo substituicao da resposta.",
+    "Word (.docx) e PowerPoint (.pptx): edite o próprio arquivo, por exemplo com python-docx ou python-pptx, "
+    "trocando só o texto dos trechos e preservando a formatação; não converta o arquivo nem salve uma cópia com "
+    "outro nome. HTML: edite o código-fonte, mantendo as tags.",
+    "Em Word, PowerPoint, HTML e PDF avulso, as linhas do pacote são as do texto que o Marga extraiu, não as do "
+    "arquivo: localize cada trecho pela citação exata. Nesse texto, # marca títulos, - itens de lista, | linhas "
+    "de tabela e === slide N === o começo de cada slide.",
+    "PDF avulso não tem fonte para editar: devolva o texto corrigido no campo substituicao da resposta. Faça o "
+    "mesmo, explicando na nota, se não conseguir editar um .docx ou .pptx.",
     "Não altere nada dentro de .marga/ além do response.json desta rodada.",
 ]
+
+EDIT_HINTS = {
+    "docx": "edite o próprio .docx, por exemplo com python-docx, preservando a formatação",
+    "pptx": "edite o próprio .pptx, por exemplo com python-pptx, preservando a formatação",
+    "html": "edite o código-fonte; cada comentário indica as linhas do arquivo",
+}
+
+DOC_NOTES = {
+    "pdf": "PDF avulso: não há fonte para editar; devolva o texto corrigido em `substituicao`.",
+    "docx": "Word: as linhas abaixo são do texto que o Marga extraiu do arquivo, um parágrafo por linha. Localize "
+            "cada trecho pela citação exata e edite o próprio `.docx`, preservando a formatação.",
+    "pptx": "PowerPoint: as linhas abaixo são do texto que o Marga extraiu do arquivo, e `=== slide N ===` abre "
+            "cada slide. Localize cada trecho pela citação exata, no slide indicado, e edite o próprio `.pptx`.",
+    "html": "HTML: as linhas abaixo são do texto que o Marga extraiu do arquivo; cada comentário indica também as "
+            "linhas correspondentes no arquivo. Edite o código-fonte.",
+}
 
 AGENT_GUIDE = """# Marga · guia para agentes
 
@@ -56,6 +90,11 @@ mudança no disco, registra a nova versão, re-ancora os comentários e compara 
 Onde editar: nos caminhos da seção *Onde editar* do pacote, dentro deste workspace. Projetos importados de um
 `.zip` (do Overleaf, por exemplo) viram uma cópia em `uploads/<nome>/`, e é essa cópia que se edita. Não gere
 `.zip` nem aplique as mudanças em outra cópia do projeto, como o Overleaf: o Marga só enxerga o disco.
+
+Word, PowerPoint e HTML: o Marga revisa o texto que extrai desses arquivos (um parágrafo, item ou linha de
+tabela por linha; `=== slide N ===` abre cada slide), então as linhas do pacote não são as do arquivo: localize
+cada trecho pela citação exata. Edite o próprio arquivo: o `.docx` e o `.pptx` com python-docx ou python-pptx,
+preservando a formatação, e o `.html` no código-fonte.
 """
 
 
@@ -146,7 +185,7 @@ def _link_refs(ann: Annotation, links: list[Link], by_id: dict[str, Annotation])
 
 
 def _annotation_entry(ann: Annotation, texts: dict[str, str], latest_n: int | None, links: list[Link],
-                      by_id: dict[str, Annotation], doc: Document) -> dict:
+                      by_id: dict[str, Annotation], doc: Document, extracted: dict[str, Extracted]) -> dict:
     anchor = ann.anchor
     stale = latest_n is not None and anchor.version != latest_n
     text = texts.get(anchor.file)
@@ -154,7 +193,7 @@ def _annotation_entry(ann: Annotation, texts: dict[str, str], latest_n: int | No
     if text is not None and not stale:
         rows = [{"n": n, "text": t, "anchored": inside}
                 for n, t, inside in excerpt(text, anchor.start_line, anchor.end_line, context=2)]
-    return {
+    entry = {
         "id": ann.id,
         "kind": ann.kind,
         "type": ann.type,
@@ -182,6 +221,14 @@ def _annotation_entry(ann: Annotation, texts: dict[str, str], latest_n: int | No
         ],
         "links": _link_refs(ann, links, by_id),
     }
+    source = extracted.get(anchor.file)
+    if source is not None and not stale:
+        if doc.kind == "pptx":
+            entry["slide"] = source.page_of_line(anchor.start_line)
+        file_lines = source.source_lines(anchor.start_line, anchor.end_line) if doc.kind == "html" else None
+        if file_lines:
+            entry["file_lines"] = list(file_lines)  # HTML: linhas do arquivo onde o trecho está
+    return entry
 
 
 def response_template(round_n: int, comment_ids: list[str]) -> dict:
@@ -200,6 +247,7 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
     included = {a.id for a in open_anns}
 
     texts: dict[str, dict[str, str]] = {}
+    extracted: dict[str, dict[str, Extracted]] = {}
     latest_n: dict[str, int] = {}
     doc_entries = []
     for doc in docs:
@@ -209,6 +257,8 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
         current = version_texts(ws, doc, latest)
         texts[doc.id] = current
         latest_n[doc.id] = latest.n
+        if doc.kind in EXTRACTED_KINDS:
+            extracted[doc.id] = {path: extracted_text(ws, doc, latest, path) for path in latest.files}
         prev = previous_version(ws, doc.id, latest.n)
         entry = {
             "id": doc.id, "name": doc.name, "kind": doc.kind, "kind_label": doc.kind_label,
@@ -217,7 +267,10 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
             "version": latest.n, "version_origin": latest.origin,
             "previous_version": prev.n if prev else None,
             "files": sorted(latest.files), "editable": doc.kind != "pdf",
+            "extracted_text": doc.kind == "pdf" or doc.kind in EXTRACTED_KINDS,
         }
+        if doc.kind in EDIT_HINTS:
+            entry["edit_hint"] = EDIT_HINTS[doc.kind]
         if doc.kind == "latex":
             res = load_result(ws, doc.id, latest.n)
             entry["compile"] = None if res is None else {
@@ -246,7 +299,8 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
         doc_entries.append(entry)
 
     ann_entries = [
-        _annotation_entry(a, texts.get(a.doc, {}), latest_n.get(a.doc), links, by_id, docs_by_id[a.doc])
+        _annotation_entry(a, texts.get(a.doc, {}), latest_n.get(a.doc), links, by_id, docs_by_id[a.doc],
+                          extracted.get(a.doc, {}))
         for a in open_anns
     ]
     link_entries = []
@@ -331,10 +385,20 @@ def _lines_label(a: dict) -> str:
     return f"linha {first}" if first == last else f"linhas {first}–{last}"
 
 
+def _where_badges(a: dict) -> list[str]:
+    """Slide (PowerPoint) ou página (PDF avulso) e, no HTML, as linhas do arquivo onde está o trecho."""
+    out = []
+    if a.get("slide"):
+        out.append(f"slide {a['slide']}")
+    elif a.get("page"):
+        out.append(f"página {a['page']}")
+    if a.get("file_lines"):
+        out.append(f"no arquivo: {_lines_label({'lines': a['file_lines']})}")
+    return out
+
+
 def _md_annotation(a: dict) -> list[str]:
-    head = f"##### {a['id']} · {a['type_label']} · {_lines_label(a)}"
-    if a.get("page"):
-        head += f" · página {a['page']}"
+    head = " · ".join([f"##### {a['id']}", a["type_label"], _lines_label(a), *_where_badges(a)])
     parts = [head, ""]
     if a["stale"]:
         parts += ["> ⚠️ Trecho não encontrado na versão atual; a citação abaixo é de uma versão anterior.", ""]
@@ -426,7 +490,8 @@ def render_markdown(b: dict) -> str:
         "",
     ]
     for d, where in _edit_targets(b):
-        out.append(f"- **{d['id']}** · {d['name']} · {d['kind_label']}: " + (f"`{where}`" if d["editable"] else where))
+        out.append(f"- **{d['id']}** · {d['name']} · {d['kind_label']}: " + (f"`{where}`" if d["editable"] else where)
+                   + (f" ({d['edit_hint']})" if d.get("edit_hint") else ""))
     out += [
         "",
         "Não gere `.zip`, não edite outra cópia do projeto (Overleaf, Downloads, um clone) e não renomeie nem "
@@ -460,8 +525,8 @@ def render_markdown(b: dict) -> str:
         if not items:
             continue
         out += ["", f"### Documento {doc_id} · {d['name']} (v{d['version']})"]
-        if not d["editable"]:
-            out += ["", "_PDF avulso: não há fonte para editar; devolva o texto corrigido em `substituicao`._"]
+        if d["kind"] in DOC_NOTES:
+            out += ["", f"_{DOC_NOTES[d['kind']]}_"]
         for file in sorted({a["file"] for a in items}):
             out += ["", f"#### `{file}`"]
             for a in sorted((x for x in items if x["file"] == file), key=lambda x: (x["lines"][0], x["id"])):
@@ -471,7 +536,8 @@ def render_markdown(b: dict) -> str:
         out += ["", "## Marcas (trechos referenciados por links)", ""]
         for a in sorted(marks, key=lambda x: (x["doc"], x["file"], x["lines"][0])):
             note = f" — {a['body']}" if a["body"] else ""
-            out.append(f"- `{a['id']}` · {a['doc']} · `{a['file']}:{a['lines'][0]}` · "
+            where = "".join(f" · {badge}" for badge in _where_badges(a))
+            out.append(f"- `{a['id']}` · {a['doc']} · `{a['file']}:{a['lines'][0]}`{where} · "
                        f"{_inline_code(_short(a['quote'], 100))}{note}")
 
     if b["links"]:
@@ -502,8 +568,10 @@ def render_markdown(b: dict) -> str:
     if sources:
         out += ["", "## Conteúdo completo dos arquivos"]
         for d in sources:
+            extracted_note = ", texto extraído" if d.get("extracted_text") else ""
             for path, text in sorted(d["sources"].items()):
-                out += ["", f"### `{path}` ({d['id']} v{d['version']})", "", _fence(text, _lang(path))]
+                out += ["", f"### `{path}` ({d['id']} v{d['version']}{extracted_note})", "",
+                        _fence(text, "" if extracted_note else _lang(path))]
 
     template = json.dumps(b["response"]["template"], ensure_ascii=False, indent=2)
     out += ["", "## Resposta", "",
@@ -511,7 +579,8 @@ def render_markdown(b: dict) -> str:
             _fence(template, "json"), "",
             "Status aceitos: " + ", ".join(f"`{s}`" for s in b["response"]["statuses"]) + ". "
             "Use a nota para explicar o que mudou, responder perguntas ou dizer por que algo não foi feito. "
-            "Para PDF avulso, inclua `\"substituicao\": \"texto corrigido\"`."]
+            "Para PDF avulso (ou um .docx/.pptx que você não conseguiu editar), inclua "
+            "`\"substituicao\": \"texto corrigido\"`."]
     return "\n".join(out) + "\n"
 
 
@@ -551,9 +620,7 @@ def _html_lines(rows: list[tuple[str, str]]) -> str:
 
 
 def _html_annotation(a: dict) -> str:
-    badges = [a["type_label"], _lines_label(a)]
-    if a.get("page"):
-        badges.append(f"página {a['page']}")
+    badges = [a["type_label"], _lines_label(a), *_where_badges(a)]
     if a["region_state"]:
         badges.append(REGION_STATES.get(a["region_state"], a["region_state"]))
     out = [f'<div class="card" id="{_e(a["id"])}"><h4>{_e(a["id"])} · <code>{_e(a["file"])}</code></h4>',
@@ -602,7 +669,8 @@ def render_html(b: dict) -> str:
         "<h2>Onde editar</h2><p>Edite os arquivos direto no disco. O Marga só enxerga mudanças nestes caminhos:</p>"
         "<ul>" + "".join(
             f"<li><b>{_e(d['id'])}</b> · {_e(d['name'])} · {_e(d['kind_label'])}: "
-            + (f"<code>{_e(where)}</code>" if d["editable"] else _e(where)) + "</li>"
+            + (f"<code>{_e(where)}</code>" if d["editable"] else _e(where))
+            + (f" ({_e(d['edit_hint'])})" if d.get("edit_hint") else "") + "</li>"
             for d, where in _edit_targets(b)
         ) + "</ul><p>Não gere <code>.zip</code>, não edite outra cópia do projeto (Overleaf, Downloads, um clone) "
         "e não renomeie nem mova arquivos.</p>",
@@ -628,6 +696,8 @@ def render_html(b: dict) -> str:
         items = sorted((a for a in comments if a["doc"] == doc_id), key=lambda x: (x["file"], x["lines"][0]))
         if items:
             out.append(f"<h3>Documento {_e(doc_id)} · {_e(d['name'])} (v{d['version']})</h3>")
+            if d["kind"] in DOC_NOTES:
+                out.append(f"<p class='meta'>{_e(DOC_NOTES[d['kind']].replace('`', ''))}</p>")
             out += [_html_annotation(a) for a in items]
     if marks:
         out.append("<h2>Marcas</h2>")
@@ -674,7 +744,9 @@ def agent_prompt(ws: Workspace, info: RoundInfo) -> str:
     """Prompt para colar no agente: onde está o pacote, onde editar e onde deixar a resposta."""
     rel = f".marga/rounds/{info.dirname}"
     docs = {d.id: d for d in ws.docs()}
-    where = [f"- {docs[i].label}: {ws.root / docs[i].root}" for i in info.docs if i in docs and docs[i].kind != "pdf"]
+    where = [f"- {docs[i].label}: {ws.root / docs[i].root}"
+             + (f" ({EDIT_HINTS[docs[i].kind]})" if docs[i].kind in EDIT_HINTS else "")
+             for i in info.docs if i in docs and docs[i].kind != "pdf"]
     lines = [f"Estou revisando os documentos do workspace {ws.root} com o Marga. Leia {rel}/bundle.md e aplique os "
              "comentários seguindo as regras do pacote."]
     if where:

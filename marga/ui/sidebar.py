@@ -12,11 +12,10 @@ from marga.core.pdf import page_count
 from marga.core.versions import blob_path, doc_status, latest_version
 from marga.core.workspace import MARGA_DIR, MargaError, Workspace
 from marga.ui import state
-from marga.ui.render import short
+from marga.ui.render import KIND_ICON, short
 
-KIND_ICON = {"latex": "📄", "pdf": "📕", "text": "📝"}
 ADD_FROM = {"enviar": "Enviar", "workspace": "Pasta", "disco": "Disco"}
-UPLOAD_TYPES = ["zip", "pdf", "tex", "md", "txt"]
+UPLOAD_TYPES = ["zip", "pdf", "tex", "docx", "pptx", "html", "htm", "md", "txt"]
 
 
 def render(default_path: str) -> Workspace | None:
@@ -184,7 +183,7 @@ def _add_upload(ws: Workspace) -> None:
     if upload is None:
         st.caption("📦 Um .zip baixado do Overleaf vira um documento LaTeX com todos os .tex, a bibliografia "
                    "e as figuras, ou a próxima versão de um documento enviado antes. Também aceita .pdf, .tex, "
-                   ".md e .txt.")
+                   "Word (.docx), PowerPoint (.pptx), .html, .md e .txt.")
         return
     target = _zip_target(ws, upload.name, f"add_up_as_{n}")
     if target:
@@ -208,7 +207,7 @@ def _add_upload(ws: Workspace) -> None:
 def _add_found(ws: Workspace) -> None:
     candidates = actions.discover(ws)
     if not candidates:
-        st.caption("Nenhuma pasta LaTeX, PDF ou arquivo de texto novo nesta pasta.")
+        st.caption("Nenhuma pasta LaTeX, PDF, Word, PowerPoint, HTML ou arquivo de texto novo nesta pasta.")
         return
     idx = st.selectbox("Encontrados no workspace", range(len(candidates)), key="add_choice",
                        format_func=lambda i: candidates[i].label)
@@ -236,7 +235,7 @@ def _add_from_disk(ws: Workspace) -> None:
         return
     name = st.text_input("Nome no Marga (opcional)", key="add_disk_name")
     st.caption("Para arquivos grandes: o Marga lê direto do disco. Um .zip é extraído em uploads/; "
-               ".pdf, .tex, .md e .txt de fora do workspace são copiados para lá.")
+               ".pdf, .tex, .docx, .pptx, .html, .md e .txt de fora do workspace são copiados para lá.")
     if st.button("Importar", type="primary", key="add_disk_go", disabled=not raw.strip(), width="stretch"):
         with st.spinner("Importando…"):
             try:

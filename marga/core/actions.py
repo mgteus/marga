@@ -17,9 +17,12 @@ from typing import BinaryIO
 from urllib.parse import unquote
 
 from . import anchors as anc
+from .formats import FORMATS, kind_for
 from .latex import DOCCLASS_RE, detect_engine, find_main_candidates
 from .models import (
     COMMENT_TYPES,
+    DOC_KINDS,
+    EXTRACTED_KINDS,
     LINK_RELATIONS,
     MARK_TYPE,
     STATUSES,
@@ -30,12 +33,14 @@ from .models import (
     Reply,
     Version,
 )
-from .versions import SKIP_DIRS, TEXT_EXTS, doc_status, read_working_text, snapshot, version_texts
+from .versions import SKIP_DIRS, TEXT_EXTS, doc_status, page_of_line, read_working_text, snapshot, version_texts
 from .workspace import MargaError, Workspace
 from .zipimport import extract_zip
 
 TEXT_DOC_EXTS = {".md", ".markdown", ".txt", ".rst"}
-IMPORT_EXTS = {".zip", ".pdf", ".tex", *TEXT_DOC_EXTS}
+IMPORT_EXTS = {".zip", ".pdf", ".tex", *FORMATS, *TEXT_DOC_EXTS}
+SUPPORTED = ".zip, .pdf, .tex, .docx, .pptx, .html, .md ou .txt"
+LOCK_PREFIX = "~$"  # arquivo de trava que o Word e o PowerPoint criam ao lado do documento aberto
 
 
 # ------------------------------------------------------------- documentos
@@ -48,10 +53,11 @@ class Candidate:
 
 
 def discover(ws: Workspace, max_depth: int = 3) -> list[Candidate]:
-    """Pastas LaTeX, PDFs avulsos e arquivos de texto do workspace ainda não registrados."""
+    """Pastas LaTeX, PDFs avulsos, Word, PowerPoint, HTML e textos do workspace ainda não registrados."""
     registered = {d.root for d in ws.docs()}
     latex: dict[str, list[str]] = {}
     pdfs: list[Path] = []
+    office: list[tuple[str, str]] = []  # (caminho, tipo): Word, PowerPoint e HTML
     texts: list[str] = []
     for dirpath, dirnames, filenames in os.walk(ws.root):
         depth = len(Path(dirpath).relative_to(ws.root).parts)
@@ -61,7 +67,7 @@ def discover(ws: Workspace, max_depth: int = 3) -> list[Candidate]:
             else []
         )
         for name in sorted(filenames):
-            if name.startswith("."):
+            if name.startswith((".", LOCK_PREFIX)):
                 continue
             path = Path(dirpath, name)
             ext = path.suffix.lower()
@@ -74,13 +80,20 @@ def discover(ws: Workspace, max_depth: int = 3) -> list[Candidate]:
                     latex.setdefault(ws.rel(dirpath), []).append(ws.rel(path))
             elif ext == ".pdf":
                 pdfs.append(path)
+            elif ext in FORMATS:
+                office.append((ws.rel(path), FORMATS[ext]))
             elif ext in TEXT_DOC_EXTS:
                 texts.append(ws.rel(path))
     if ws.uploads.is_dir():
         for path in sorted(ws.uploads.iterdir()):
-            if path.suffix.lower() == ".pdf":
+            ext = path.suffix.lower()
+            if path.name.startswith((".", LOCK_PREFIX)):
+                continue
+            if ext == ".pdf":
                 pdfs.append(path)
-            elif path.suffix.lower() in TEXT_DOC_EXTS:
+            elif ext in FORMATS and path.is_file():
+                office.append((ws.rel(path), FORMATS[ext]))
+            elif ext in TEXT_DOC_EXTS:
                 texts.append(ws.rel(path))
             elif path.is_dir():
                 mains = [ws.rel(p) for p in find_main_candidates(path)]
@@ -99,6 +112,9 @@ def discover(ws: Workspace, max_depth: int = 3) -> list[Candidate]:
         if rel in registered or path.with_suffix(".tex").exists():
             continue  # PDF ao lado de um .tex homônimo é saída de compilação
         out.append(Candidate(rel, "pdf", None, f"{rel} · PDF avulso"))
+    for rel, kind in office:
+        if rel not in registered:
+            out.append(Candidate(rel, kind, None, f"{rel} · {DOC_KINDS[kind]}"))
     for rel in texts:
         if rel not in registered:
             out.append(Candidate(rel, "text", None, f"{rel} · texto"))
@@ -116,6 +132,8 @@ def add_document(ws: Workspace, path: str, kind: str | None = None, name: str | 
     if kind is None:
         if target.suffix.lower() == ".pdf":
             kind = "pdf"
+        elif target.is_file() and kind_for(target):
+            kind = kind_for(target)
         elif target.suffix.lower() == ".tex" or (target.is_dir() and find_main_candidates(target)):
             kind = "latex"
         else:
@@ -137,9 +155,10 @@ def add_document(ws: Workspace, path: str, kind: str | None = None, name: str | 
                 main_rel = ws.rel(candidates[0])
         engine = engine or detect_engine(read_working_text(ws, main_rel)) or "pdflatex"
         default_name = target.name if target.is_dir() else target.parent.name
-    elif kind == "pdf":
+    elif kind == "pdf" or kind in EXTRACTED_KINDS:
         if not single:
-            raise MargaError("Para PDF avulso, escolha um arquivo .pdf.")
+            raise MargaError("Para PDF avulso, escolha um arquivo .pdf." if kind == "pdf" else
+                             f"Para {DOC_KINDS[kind]}, escolha um arquivo, não uma pasta.")
         root_rel, main_rel = rel, rel
         default_name = target.name
     else:
@@ -227,7 +246,7 @@ def import_upload(ws: Workspace, filename: str, data: BinaryIO | bytes, name: st
     """Arquivo enviado pela interface → documento (o .zip é extraído; os demais vão para ``uploads/``)."""
     ext = Path(filename).suffix.lower()
     if ext not in IMPORT_EXTS:
-        raise MargaError(f"Tipo de arquivo não suportado: {filename} (use .zip, .pdf, .tex, .md ou .txt).")
+        raise MargaError(f"Tipo de arquivo não suportado: {filename} (use {SUPPORTED}).")
     if ext == ".zip":
         return import_zip(ws, io.BytesIO(data) if isinstance(data, bytes) else data, filename, name)
     rel = save_upload(ws, filename, data if isinstance(data, bytes) else data.getvalue())
@@ -259,7 +278,7 @@ def parse_path(ws: Workspace, raw: str) -> Path:
 
 
 def import_path(ws: Workspace, raw: str, name: str | None = None) -> Document:
-    """Importa um arquivo do disco: .zip é extraído; .pdf/.tex/.md/.txt de fora do workspace são copiados."""
+    """Importa um arquivo do disco: .zip é extraído; os outros tipos aceitos, de fora do workspace, são copiados."""
     path = parse_path(ws, raw)
     if not path.exists():
         raise MargaError(f"Não encontrei {path}.")
@@ -270,7 +289,7 @@ def import_path(ws: Workspace, raw: str, name: str | None = None) -> Document:
                          "Workspace, no topo) ou importe um .zip dela.")
     ext = path.suffix.lower()
     if ext not in IMPORT_EXTS:
-        raise MargaError(f"Tipo de arquivo não suportado: {path.name} (use .zip, .pdf, .tex, .md ou .txt).")
+        raise MargaError(f"Tipo de arquivo não suportado: {path.name} (use {SUPPORTED}).")
     if ext == ".zip":
         return import_zip(ws, path, path.name, name)
     if ws.contains(path):
@@ -411,6 +430,8 @@ def register_version(ws: Workspace, doc_id: str, note: str = "") -> RegisterRepo
                 continue
             res = anc.reanchor(ann.anchor, old_texts, new_texts, new.n)
             if res.state != "orfao":
+                if doc.kind in ("pdf", "pptx"):  # o trecho pode ter mudado de página (PDF avulso) ou de slide
+                    res.anchor.page = page_of_line(ws, doc, new, res.anchor.file, res.anchor.start_line)
                 ann.anchor_history.append(ann.anchor)
                 ann.anchor = res.anchor
             ann.region_state = res.state

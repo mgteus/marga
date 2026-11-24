@@ -7,7 +7,8 @@ import pymupdf
 from streamlit.testing.v1 import AppTest
 
 from marga.core import actions, export, folders
-from marga.core.versions import load_versions
+from marga.core.anchors import anchor_from_offsets
+from marga.core.versions import latest_version, load_versions, version_text
 from marga.core.workspace import Workspace
 
 APP = str(Path(__file__).resolve().parents[1] / "marga" / "app.py")
@@ -108,3 +109,37 @@ def test_latex_source_jumps_to_a_section(demo_ws, monkeypatch):
     assert at.session_state[f"L_file_{doc.id}_1"] == "artigo/sections/metodos.tex"
     assert at.session_state["focus"]["file"] == "artigo/sections/metodos.tex"
     assert at.selectbox(key=f"L_jump_{doc.id}_1").value == -1
+
+
+def test_word_powerpoint_and_html_render_linked_and_jump_to_a_slide(demo_ws, monkeypatch):
+    slides = actions.add_document(demo_ws, "apresentacao.pptx")
+    report = actions.add_document(demo_ws, "relatorio.docx")
+    page = actions.add_document(demo_ws, "pagina.html")
+    marks = []
+    for doc, phrase in ((slides, "1.200 participantes"), (report, "1.250 participantes"), (page, "120 estações")):
+        version = latest_version(demo_ws, doc.id)
+        text = version_text(demo_ws, doc, version, doc.root)
+        start = text.index(phrase)
+        anchor = anchor_from_offsets(text, doc.root, version.n, start, start + len(phrase))
+        marks.append(actions.create_annotation(demo_ws, doc.id, anchor, "marca", "").id)
+    actions.create_link(demo_ws, marks[0], marks[1], "contradiz")
+    actions.create_link(demo_ws, marks[2], marks[1], "consistente")
+    export.export_round(demo_ws)
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["L_doc"] = slides.id
+    at.session_state["R_doc"] = report.id
+    at.run()
+    assert not at.exception, at.exception
+
+    jump = at.selectbox(key=f"L_jump_{slides.id}_1")
+    assert jump.options[1:] == ["Slide 1 · Bicicletas compartilhadas em Curitiba", "Slide 2 · Metodologia",
+                                "Slide 3 · Resultados"]
+    assert at.selectbox(key=f"R_jump_{report.id}_1").options[2:4] == ["Resumo", "Amostra"]
+    jump.select(2).run()
+    assert not at.exception, at.exception
+    assert at.session_state["focus"]["line"] == 13
+    for section in ("Links", "Comparar versões", "Rodadas", "Revisão"):
+        at.session_state["nav"] = section
+        at.run()
+        assert not at.exception, (section, at.exception)

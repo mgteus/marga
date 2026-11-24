@@ -27,11 +27,12 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 |---|---|
 | 🎯 **Comentários ancorados** | Selecione no fonte (precisão de caractere) ou no PDF (clique e retângulo, via SyncTeX). Cada comentário guarda arquivo, linhas, colunas e a citação exata. |
 | 🪟 **Duas colunas** | Fonte × PDF (como no Overleaf), documento A × B ou v3 × v4, lado a lado. |
-| 🔗 **Rastreio entre arquivos** | Ligue trechos (consistente, propagar, mover, contradiz…) e veja o grafo dos links. |
+| 🔗 **Rastreio entre arquivos** | Ligue trechos de quaisquer documentos, LaTeX, PDF, Word, PowerPoint, HTML ou texto (consistente, propagar, mover, contradiz…), e veja o grafo dos links. |
 | 📦 **Rodadas para o agente** | Um pacote em Markdown, JSON e HTML, mais um prompt curto para colar no Claude Code (ou em outro agente com acesso à pasta). |
 | 🔄 **Versões e re-ancoragem** | Snapshots imutáveis por sha256. Na versão nova, cada comentário fica *inalterado*, *alterado*, *movido* ou *órfão*. |
 | ⚡ **Compilação paralela** | `latexmk` compila os documentos visíveis ao mesmo tempo; um erro de compilação vira comentário com um clique. |
 | 📕 **PDFs avulsos** | PDFs sem fonte também são revisáveis, a partir do texto extraído de cada página. |
+| 📘 **Word, PowerPoint e HTML** | `.docx`, `.pptx` e `.html` viram documentos revisáveis: o Marga extrai o texto (parágrafos, títulos, tópicos de cada slide, tabelas) e compara as versões por ele. Quem edita o próprio arquivo é o agente. |
 | 📦 **Projetos do Overleaf** | O `.zip` baixado do Overleaf vira um documento LaTeX completo: vários `.tex`, figuras e bibliografia. Um `.zip` novo do mesmo projeto vira a próxima versão do documento. |
 | 🧭 **Seções** | Em PDFs grandes, uma lista de seções leva direto a cada capítulo e filtra o texto. Ela vem do fonte LaTeX, dos marcadores do PDF ou de títulos detectados pela tipografia. |
 | 🔒 **Local e não destrutivo** | Quem edita é o agente. O Marga só escreve em `.marga/` e em `uploads/`, onde guarda as cópias dos arquivos enviados; seus arquivos de fora de `uploads/` nunca são sobrescritos. |
@@ -113,13 +114,13 @@ flowchart LR
 
    | Origem | O que aceita |
    |---|---|
-   | **Enviar** | Um arquivo do computador: `.zip` do Overleaf, `.pdf`, `.tex`, `.md` ou `.txt` |
-   | **Pasta** | O que já está na pasta: pastas LaTeX (o `.tex` com `\documentclass`), PDFs avulsos e textos (`.md`, `.txt`, `.rst`) |
+   | **Enviar** | Um arquivo do computador: `.zip` do Overleaf, `.pdf`, `.tex`, `.docx`, `.pptx`, `.html`, `.md` ou `.txt` |
+   | **Pasta** | O que já está na pasta: pastas LaTeX (o `.tex` com `\documentclass`), PDFs avulsos, Word (`.docx`), PowerPoint (`.pptx`), HTML (`.html`, `.htm`) e textos (`.md`, `.txt`, `.rst`) |
    | **Disco** | O caminho de um arquivo (ex.: `~/Downloads/projeto.zip`), sem passar pelo navegador. Melhor para arquivos grandes |
-2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo.
+2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, PowerPoint, HTML e textos têm só o modo Fonte, com o texto do arquivo.
    - **§ Seções:** no modo PDF, a lista ao lado do número da página acompanha a página atual e salta para qualquer capítulo ou seção. Digite parte do título para filtrar.
    - No texto de um PDF avulso, a mesma lista filtra o trecho mostrado. Acima de 120 páginas, o texto aparece por seção ou em blocos de 20 páginas.
-   - No fonte LaTeX, **§ Ir para seção** abre o arquivo na linha do título e leva junto o PDF da outra coluna.
+   - No fonte LaTeX, **§ Ir para seção** abre o arquivo na linha do título e leva junto o PDF da outra coluna. No Word e no HTML, a mesma lista vai para cada título; no PowerPoint, **§ Ir para slide** vai para cada slide.
    - As seções vêm do fonte LaTeX (posicionado pelo SyncTeX), dos marcadores do PDF ou, em PDFs sem marcadores, de títulos detectados pela tipografia.
 3. **Selecione e comente.**
    - Fonte: arraste para selecionar, ou clique/arraste nos números de linha (shift estende).
@@ -141,6 +142,27 @@ flowchart LR
 5. **Revisão aplicada no Overleaf?** Baixe o projeto de novo e, em **Enviar** ou **Disco**, escolha **Adicionar como → Nova versão de A**. Os arquivos do `.zip` substituem a cópia em `uploads/`, e os textos que não vierem nele saem da cópia. Figuras que sumiram ficam, para as versões antigas continuarem compilando, e a v anterior continua guardada. A versão nova responde à rodada pendente, como quando o agente edita o disco.
 
 A primeira compilação de um projeto com muitas figuras leva alguns minutos. Uma dissertação com cerca de 350 MB de imagens levou cerca de 100 s, e o limite é de 10 minutos. O `marga` aceita envios de até 2 GB e as versões antigas reaproveitam as figuras por hard link, sem copiá-las.
+
+</details>
+
+<details>
+<summary>📘 Word, PowerPoint e HTML</summary>
+
+Cada `.docx`, `.pptx` ou `.html` é um documento próprio (B, C…). O Marga extrai dele um texto em linhas, parecido com Markdown, e é nesse texto que você seleciona, comenta e cria links com os outros documentos:
+
+| No texto extraído | Vem de |
+|---|---|
+| Um parágrafo por linha | Parágrafos do Word e blocos do HTML (`<p>`, `<div>`, `<li>`…) |
+| `# Título`, `## Subtítulo` | Estilos de título do Word (ou o nível de tópico), `<h1>`–`<h6>` e o título de cada slide |
+| `- item`, com dois espaços de recuo por nível | Listas do Word e do HTML, tópicos dos slides |
+| `\| célula \| célula \|` | Uma linha por linha de tabela |
+| `=== slide 3 ===` e `Notas do apresentador:` | O começo de cada slide (na ordem da apresentação; slides ocultos levam `· oculto`) e as notas dele |
+| `[^1]` e `[^1]: …` no fim | Notas de rodapé do Word |
+
+- Com o controle de alterações ligado, vale o texto como se todas as revisões fossem aceitas. Caixas de texto viram linhas logo depois do parágrafo em que estão.
+- O texto extraído é guardado com cada versão. O diff, a re-ancoragem e a aba *Comparar versões* usam esse texto; as seleções no PowerPoint também guardam o slide.
+- No pacote, o agente recebe o caminho do arquivo e como editá-lo: o próprio `.docx`/`.pptx` (por exemplo, com python-docx ou python-pptx), preservando a formatação, e o código-fonte do `.html`. Como as linhas do pacote são as do texto extraído, ele localiza cada trecho pela citação exata; no HTML, cada comentário também traz as linhas do arquivo.
+- Se o arquivo mudar no disco (o agente salvou, ou você editou no Word), a barra lateral oferece **Registrar vN+1**, como nos outros tipos.
 
 </details>
 
@@ -173,7 +195,7 @@ Cada rodada fica em `.marga/rounds/NNN/`, e a mais recente também em `.marga/ro
 
 | Arquivo | Para quem | Conteúdo |
 |---|---|---|
-| `bundle.md` | Agente | O prompt: onde editar (o caminho completo de cada documento), regras, comentários por arquivo com trecho numerado e citação exata, sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
+| `bundle.md` | Agente | O prompt: onde editar (o caminho completo de cada documento e, em Word, PowerPoint e HTML, como editá-lo), regras, comentários por arquivo com trecho numerado e citação exata (mais o slide ou as linhas do arquivo HTML), sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
 | `bundle.json` | Agente / scripts | Os mesmos dados estruturados (schema `marga.bundle/v1`), incluindo o diff desde a versão anterior |
 | `bundle.html` | Você | Relatório para leitura humana, autocontido |
 | `response.json` | Escrito pelo agente | Uma nota por comentário (schema `marga.response/v1`) |
@@ -201,7 +223,7 @@ E a resposta do agente:
   "comments": {
     "c1": {"status": "feito", "nota": "troquei 2019 por 2021"},
     "c2": {"status": "resposta", "nota": "resposta à pergunta"},
-    "c3": {"status": "feito", "substituicao": "texto corrigido (para PDF avulso)"}
+    "c3": {"status": "feito", "substituicao": "texto corrigido (PDF avulso, ou um .docx/.pptx que não deu para editar)"}
   }
 }
 ```
@@ -215,7 +237,7 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 .marga/
 ├── .gitignore                   "*": o git do workspace ignora o estado do Marga
 ├── marga.json                   documentos, contadores e ajustes
-├── objects/                     conteúdo de cada versão, endereçado por sha256
+├── objects/                     conteúdo de cada versão (e o texto extraído de Word, PowerPoint e HTML), por sha256
 ├── docs/A/versions.json         versões de cada documento
 ├── annotations.json             comentários (cN) e marcas (mN)
 ├── links.json                   links (LN)
@@ -235,9 +257,11 @@ O `uploads/` também ganha um `.gitignore` com `*`, para as cópias dos document
 ## 🧪 Desenvolvimento
 
 ```bash
-uv sync             # dependências do uv.lock, incluindo o grupo dev (pytest)
+uv sync             # dependências do uv.lock, incluindo o grupo dev (pytest, python-docx, python-pptx)
 uv run pytest       # os testes de LaTeX são pulados sem latexmk/synctex
 ```
+
+O app lê Word, PowerPoint e HTML só com a biblioteca padrão. O python-docx e o python-pptx ficam no grupo dev: os testes os usam para simular o agente editando os arquivos, e `uv run python examples/gerar_demo_office.py` gera o `relatorio.docx` e a `apresentacao.pptx` do exemplo.
 
 Dois testes opcionais usam seus próprios arquivos e só rodam quando a variável aponta para eles. O primeiro importa e compila um projeto do Overleaf e confere as seções:
 
@@ -257,7 +281,7 @@ MARGA_PDF="$HOME/Downloads/documento.pdf" uv run pytest tests/test_outline.py -k
 | `marga/ui/` | App Streamlit: barra lateral, abas e os dois componentes visuais |
 | `marga/ui/frontend/` | JS e CSS puros dos componentes de fonte e de PDF (API de componentes v2 do Streamlit, sem build). Depois de editar, reinicie o servidor |
 | `tests/` | pytest: núcleo, integração com LaTeX/SyncTeX e smoke test do app |
-| `examples/demo/` | Workspace de exemplo: artigo multi-arquivo, suplemento, parecer em PDF e notas |
+| `examples/demo/` | Workspace de exemplo: artigo multi-arquivo, suplemento, parecer em PDF, notas, relatório em Word, apresentação em PowerPoint e página HTML |
 
 O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`](docs/superpowers/specs/2026-11-22-marga-design.md), e as convenções para quem contribui (pessoas ou agentes) estão no [AGENTS.md](AGENTS.md).
 
@@ -266,7 +290,8 @@ O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`]
 - O PDF é mostrado uma página por vez. Navega-se pelas setas, pelo número ou pela lista de seções.
 - A detecção de títulos em PDFs sem marcadores é uma heurística. Ela funciona bem com títulos numerados em negrito ou maiores que o texto (o padrão do LaTeX), mas pode errar em layouts incomuns.
 - Só se comenta na versão mais recente, e só quando o disco bate com ela (registre a nova versão antes).
-- Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados.
+- Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados. Documentos Word, PowerPoint, HTML e PDF avulso são um arquivo só, guardado inteiro em cada versão.
+- Word, PowerPoint e HTML aparecem só como texto, sem a página ou o slide desenhados. Imagens, gráficos, SmartArt, cabeçalhos, rodapés e comentários do Word ficam de fora, e os formatos antigos (`.doc`, `.ppt`) não são lidos: salve-os como `.docx`/`.pptx`.
 - No PDF, a marca de uma imagem (PNG, JPG) cobre a imagem exata. Já a de uma figura vetorial (um PDF incluído com `\includegraphics`) é a caixa do SyncTeX recortada à página, que pode ser maior que a figura.
 - O **📁 Finder** abre o seletor de pastas no computador onde o servidor roda. No Linux, ele precisa do `zenity` ou do `kdialog`.
 - Não há editor de texto no app nem chamada direta a uma API de LLM: o pacote é feito para um agente com acesso à pasta.

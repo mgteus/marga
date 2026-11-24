@@ -6,7 +6,17 @@ import datetime as _dt
 from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Any
 
-DOC_KINDS: dict[str, str] = {"latex": "LaTeX", "text": "Texto", "pdf": "PDF avulso"}
+DOC_KINDS: dict[str, str] = {
+    "latex": "LaTeX",
+    "text": "Texto",
+    "pdf": "PDF avulso",
+    "docx": "Word",
+    "pptx": "PowerPoint",
+    "html": "HTML",
+}
+EXTRACTED_KINDS = frozenset({"docx", "pptx", "html"})  # um arquivo; o texto revisado é extraído dele (formats.py)
+BINARY_KINDS = frozenset({"pdf", "docx", "pptx"})  # arquivos que não são texto (sem codificação)
+PDF_KINDS = frozenset({"latex", "pdf"})  # têm o modo PDF; os outros mostram só o texto
 
 COMMENT_TYPES: dict[str, str] = {
     "corrigir": "Corrigir",
@@ -194,6 +204,7 @@ class Version:
     encodings: dict[str, str] = field(default_factory=dict)  # só arquivos que não são UTF-8
     note: str = ""
     round: int | None = None
+    extracted: dict[str, str] = field(default_factory=dict)  # Word, PowerPoint, HTML: caminho -> sha do texto extraído
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -221,6 +232,15 @@ class Document:
     @property
     def label(self) -> str:
         return f"{self.id} · {self.name}"
+
+    @property
+    def has_pdf(self) -> bool:
+        return self.kind in PDF_KINDS
+
+    @property
+    def page_word(self) -> str:
+        """Como chamar a "página" de uma âncora: o slide no PowerPoint, a página no PDF."""
+        return "slide" if self.kind == "pptx" else "página"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

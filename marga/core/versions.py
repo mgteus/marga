@@ -6,10 +6,15 @@ import hashlib
 import os
 import threading
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .models import Document, Version, now_iso
+from .models import BINARY_KINDS, EXTRACTED_KINDS, Document, Version, now_iso
 from .workspace import MargaError, Workspace, read_json, write_bytes, write_json
+
+if TYPE_CHECKING:
+    from .formats import Extracted
 
 TEXT_EXTS = {".tex", ".bib", ".sty", ".cls", ".bst", ".md", ".markdown", ".txt", ".rst"}
 MAX_FILE_BYTES = 5_000_000
@@ -157,15 +162,20 @@ def doc_status(ws: Workspace, doc: Document) -> DocStatus:
 
 
 def snapshot(ws: Workspace, doc: Document, origin: str, note: str = "", round_n: int | None = None) -> Version:
+    from .formats import extract
+
     rels = list_files(ws, doc)
     if not rels:
         raise MargaError(f"Nenhum arquivo versionável encontrado em {doc.root}.")
     files: dict[str, str] = {}
     encodings: dict[str, str] = {}
+    extracted: dict[str, str] = {}
     for rel in rels:
         data = ws.abspath(rel).read_bytes()
+        if doc.kind in EXTRACTED_KINDS:  # extrai antes de guardar: um arquivo ilegível não vira versão
+            extracted[rel] = store_blob(ws, extract(doc.kind, data, rel).to_json())
         files[rel] = store_blob(ws, data)
-        if doc.kind != "pdf":
+        if doc.kind not in BINARY_KINDS:
             _, encoding = decode_text(data)
             if encoding != "utf-8":
                 encodings[rel] = encoding
@@ -173,7 +183,7 @@ def snapshot(ws: Workspace, doc: Document, origin: str, note: str = "", round_n:
         versions = load_versions(ws, doc.id)
         n = versions[-1].n + 1 if versions else 1
         version = Version(n=n, created_at=now_iso(), origin=origin, files=files, encodings=encodings,
-                          note=note, round=round_n)
+                          note=note, round=round_n, extracted=extracted)
         versions.append(version)
         write_json(_versions_path(ws, doc.id), [v.to_dict() for v in versions])
     return version
@@ -188,8 +198,43 @@ def version_text(ws: Workspace, doc: Document, version: Version, path: str) -> s
         from .pdf import pdf_text
 
         return pdf_text(ws, sha).text
+    if doc.kind in EXTRACTED_KINDS:
+        return extracted_text(ws, doc, version, path).text
     return decode_text(read_blob(ws, sha))[0]
 
 
 def version_texts(ws: Workspace, doc: Document, version: Version) -> dict[str, str]:
     return {path: version_text(ws, doc, version, path) for path in version.files}
+
+
+@lru_cache(maxsize=64)
+def _load_extracted(blob: str) -> Extracted:
+    from .formats import Extracted
+
+    return Extracted.from_json(Path(blob).read_bytes())  # blobs são imutáveis: o cache nunca fica velho
+
+
+def extracted_text(ws: Workspace, doc: Document, version: Version, path: str) -> Extracted:
+    """Word, PowerPoint ou HTML: o texto extraído do arquivo, como foi guardado ao registrar a versão."""
+    sha = version.extracted.get(path)
+    if sha is not None:
+        blob = blob_path(ws, sha)
+        if not blob.exists():
+            raise MargaError(f"Texto extraído {sha[:12]} de {path} não encontrado em {ws.dir / 'objects'}.")
+        return _load_extracted(str(blob))
+    if path not in version.files:
+        raise MargaError(f"{path} não existe na v{version.n} de {doc.id}.")
+    from .formats import extract
+
+    return extract(doc.kind, read_blob(ws, version.files[path]), path)
+
+
+def page_of_line(ws: Workspace, doc: Document, version: Version, path: str, line: int) -> int | None:
+    """Página (PDF avulso) ou slide (PowerPoint) de uma linha do texto; ``None`` nos outros tipos."""
+    if doc.kind == "pdf" and path in version.files:
+        from .pdf import pdf_text
+
+        return pdf_text(ws, version.files[path]).page_of_line(line)
+    if doc.kind == "pptx":
+        return extracted_text(ws, doc, version, path).page_of_line(line)
+    return None

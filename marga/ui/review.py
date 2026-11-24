@@ -19,6 +19,7 @@ from marga.core.models import (
     AGENT_STATUSES,
     ANNOTATION_TYPES,
     COMMENT_TYPES,
+    EXTRACTED_KINDS,
     LINK_RELATIONS,
     MARK_TYPE,
     REGION_STATES,
@@ -32,9 +33,11 @@ from marga.core.outline import Outline, Section
 from marga.core.textmap import find_phrase, latex_to_plain, line_end, line_starts
 from marga.core.versions import (
     blob_path,
+    extracted_text,
     get_version,
     load_versions,
     manifest_hash,
+    page_of_line,
     previous_version,
     version_text,
     version_texts,
@@ -42,12 +45,11 @@ from marga.core.versions import (
 from marga.core.workspace import MargaError, Workspace
 from marga.ui import state
 from marga.ui.components import event, pdf_view, source_view
-from marga.ui.render import short, short_block, suggestion_diff
+from marga.ui.render import KIND_ICON, short, short_block, suggestion_diff
 
 SIDES = ("L", "R")
 SOURCE_HEIGHT = 640
 ZOOM = 2.0
-KIND_ICON = {"latex": "📄", "pdf": "📕", "text": "📝"}
 BIG_PDF_PAGES = 120  # acima disso, o texto de um PDF avulso aparece por seção ou em blocos de páginas
 PAGE_CHUNK = 20
 
@@ -124,7 +126,14 @@ def _outline(ws: Workspace, v: View, result) -> Outline:
     return Outline()
 
 
-def _latex_sections(ws: Workspace, v: View) -> list[Section]:
+def _sections(ws: Workspace, v: View) -> list[Section]:
+    """Atalhos do fonte: seções do LaTeX, títulos do Word e do HTML, slides do PowerPoint."""
+    if v.doc.kind in EXTRACTED_KINDS:
+        try:
+            found = extracted_text(ws, v.doc, v.version, v.doc.root).sections
+        except MargaError:
+            return []
+        return [Section(level=s["level"], title=s["title"], file=v.doc.root, line=s["line"]) for s in found]
     if v.doc.kind != "latex" or not v.doc.main:
         return []
     try:
@@ -197,7 +206,7 @@ def _controls(ws: Workspace, side: str, docs: list[Document], container) -> View
         doc_id = c[0].selectbox("Documento", ids, key=key_doc,
                                 format_func=lambda i: f"{KIND_ICON[by_id[i].kind]} {by_id[i].label}")
         doc = by_id[doc_id]
-        modes = ["Fonte"] if doc.kind == "text" else ["Fonte", "PDF"]
+        modes = ["Fonte", "PDF"] if doc.has_pdf else ["Fonte"]
         key_mode = f"{side}_mode_{doc_id}"
         if ss.get(key_mode) not in modes:
             ss[key_mode] = "PDF" if side == "R" and len(ids) == 1 and "PDF" in modes else "Fonte"
@@ -277,7 +286,7 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
     files = sorted(v.version.files)
     file = files[0]
     key_file = f"{v.side}_file_{doc.id}_{v.n}"
-    secs = _latex_sections(ws, v)
+    secs = _sections(ws, v)
     pick_file, pick_section = (st.columns([3, 2], vertical_alignment="bottom") if len(files) > 1 and secs
                                else (st.container(), st.container()))
     if len(files) > 1:
@@ -335,8 +344,7 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
     ev = event(res, "select")
     if ev and state.fresh(ev.get("nonce")):
         anchor = make_anchor(text, file, v.n, int(ev["sl"]), int(ev["sc"]), int(ev["el"]), int(ev["ec"]))
-        if doc.kind == "pdf":
-            anchor.page = _pdf_text(ws, v).page_of_line(anchor.start_line)
+        anchor.page = page_of_line(ws, doc, v.version, file, anchor.start_line)  # página do PDF ou slide
         if anchor.quote.strip():
             state.set_selection(doc.id, anchor, v.side)
         st.rerun()
@@ -347,14 +355,20 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
 
 
 def _section_jump(container, ws: Workspace, v: View, secs: list[Section], key_file: str) -> None:
-    """Fonte LaTeX: escolher uma seção abre o arquivo dela na linha do título (e leva o PDF junto)."""
+    """Escolher uma seção (ou slide) leva o fonte à linha do título; no LaTeX, abre o arquivo e leva o PDF junto."""
     key = f"{v.side}_jump_{v.doc.id}_{v.n}"
     if not isinstance(st.session_state.get(key), int):
         st.session_state[key] = -1
+    what = "slide" if v.doc.kind == "pptx" else "seção"
+
+    def label(i: int) -> str:
+        if i < 0:
+            return f"§ Ir para {what}… ({len(secs)})"
+        where = f" · {Path(secs[i].file).name}:{secs[i].line}" if v.doc.kind == "latex" else ""
+        return _section_label(secs[i], page=False) + where
+
     container.selectbox(
-        "Ir para seção", [-1, *range(len(secs))], key=key, label_visibility="collapsed",
-        format_func=lambda i: (f"§ Ir para seção… ({len(secs)})" if i < 0
-                               else f"{_section_label(secs[i], page=False)} · {Path(secs[i].file).name}:{secs[i].line}"),
+        f"Ir para {what}", [-1, *range(len(secs))], key=key, label_visibility="collapsed", format_func=label,
         on_change=_jump_to_section, args=(ws, v.doc.id, v.n, key, key_file, [(s.file, s.line) for s in secs]),
     )
 
@@ -378,6 +392,8 @@ def _jump_to_section(ws: Workspace, doc_id: str, n: int, key: str, key_file: str
 
 
 def _section_page(ws: Workspace, doc_id: str, n: int, file: str, line: int) -> int | None:
+    if ws.get_doc(doc_id).kind != "latex":
+        return None
     result = latex.load_result(ws, doc_id, n)
     if result is None or not result.has_pdf:
         return None
@@ -446,8 +462,8 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
     ss = st.session_state
     doc = v.doc
     result = None
-    if doc.kind == "text":
-        st.info("Documento de texto: não há PDF.")
+    if not doc.has_pdf:
+        st.info(f"{doc.kind_label}: não há PDF, só o texto (modo Fonte).")
         return
     if doc.kind == "pdf":
         pdf_path = blob_path(ws, v.version.files[doc.root])
@@ -704,7 +720,7 @@ def _selection_panel(ws: Workspace, v: View) -> None:
     anchor, nonce = sel
     with st.container(border=True):
         head = st.columns([9, 1], vertical_alignment="center")
-        where = f"`{anchor.file}:{anchor.lines_label}`" + (f" · pág. {anchor.page}" if anchor.page else "")
+        where = f"`{anchor.file}:{anchor.lines_label}`" + (f" · {doc.page_word} {anchor.page}" if anchor.page else "")
         head[0].markdown(f"**Seleção em {doc.id}** · {where} · v{anchor.version}")
         head[1].button("✕", key=f"clr_{nonce}", help="Limpar seleção", on_click=state.clear_selection, args=(doc.id,))
         st.code(short_block(anchor.quote, 700), language=None, wrap_lines=True)
@@ -822,6 +838,8 @@ def _annotation_list(ws: Workspace, v: View) -> None:
 def _annotation_detail(ws: Workspace, a: Annotation, links, by_id: dict[str, Annotation], v: View) -> None:
     an = a.anchor
     meta = [f"`{an.location}`", f"v{an.version}", STATUSES[a.status]]
+    if an.page:
+        meta.insert(1, f"{v.doc.page_word} {an.page}")
     if a.region_state:
         meta.append(REGION_STATES.get(a.region_state, a.region_state))
     if a.rounds:

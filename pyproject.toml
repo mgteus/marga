@@ -13,7 +13,11 @@ dependencies = [
 marga = "marga.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = [
+    "pytest>=8",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+]
 
 [build-system]
 requires = ["hatchling"]

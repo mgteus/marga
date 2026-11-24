@@ -8,6 +8,8 @@ from pathlib import Path
 from marga.core.diffing import collapse, diff_rows
 from marga.core.models import Annotation, Document, Link
 
+KIND_ICON = {"latex": "📄", "pdf": "📕", "text": "📝", "docx": "📘", "pptx": "📙", "html": "🌐"}
+
 
 def short(text: str | None, limit: int = 80) -> str:
     flat = " ".join((text or "").split())

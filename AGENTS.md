@@ -7,7 +7,7 @@ Este arquivo é para agentes (Claude Code, Codex, Cursor e afins) que vão **des
 
 ## Em 30 segundos
 
-O Marga é um webapp local em Streamlit para revisar projetos LaTeX, arquivos de texto e PDFs: o usuário comenta trechos, exporta uma *rodada* (`bundle.md/json/html`) para um agente, o agente edita os arquivos e o Marga registra a versão n+1, re-ancora os comentários e mostra o diff.
+O Marga é um webapp local em Streamlit para revisar projetos LaTeX, PDFs, Word, PowerPoint, HTML e arquivos de texto: o usuário comenta trechos, exporta uma *rodada* (`bundle.md/json/html`) para um agente, o agente edita os arquivos e o Marga registra a versão n+1, re-ancora os comentários e mostra o diff.
 
 - **Stack:** Python ≥ 3.11 (o ambiente local usa 3.13) · Streamlit 1.67 com componentes v2 · PyMuPDF · TeX Live (`latexmk` + `synctex`), opcional · [uv](https://docs.astral.sh/uv/).
 - **Idioma:** interface, pacote para o agente, mensagens de erro, docstrings, comentários e commits em português; identificadores em inglês.
@@ -30,9 +30,10 @@ marga/
 ├── cli.py              `marga [pasta] [opções do streamlit]` → `streamlit run marga/app.py -- --workspace <pasta>`
 ├── app.py              entrada do Streamlit: usa --workspace, senão $MARGA_WORKSPACE, senão a pasta atual
 ├── core/               lógica pura, sem Streamlit
-│   ├── models.py       dataclasses + JSON; tipos de comentário, relações de link, status
+│   ├── models.py       dataclasses + JSON; tipos de documento e de comentário, relações de link, status
 │   ├── workspace.py    .marga/, IDs (A, c1, m1, L1), JSON atômico, MargaError
-│   ├── versions.py     blobs sha256, snapshots, mudanças no disco (TEXT_EXTS, SKIP_DIRS)
+│   ├── versions.py     blobs sha256, snapshots (com o texto extraído), mudanças no disco (TEXT_EXTS, SKIP_DIRS)
+│   ├── formats.py      Word, PowerPoint e HTML → texto revisável em linhas (só a biblioteca padrão)
 │   ├── textmap.py      offset ↔ (linha, coluna), texto LaTeX normalizado, busca de frase
 │   ├── anchors.py      âncoras a partir de seleções; re-ancoragem n → n+1
 │   ├── diffing.py      diff para as views, diff unificado, estatísticas
@@ -54,7 +55,8 @@ marga/
     ├── components.py   registra os componentes v2 (lê o JS/CSS na importação)
     └── frontend/       source_view.{js,css} e pdf_view.{js,css}: JS puro, sem npm nem build
 tests/                  pytest; as fixtures copiam o demo para tmp_path
-examples/demo/          workspace de exemplo: artigo/, suplemento/, parecer.pdf, notas.md
+examples/demo/          workspace de exemplo: artigo/, suplemento/, parecer.pdf, notas.md, relatorio.docx, apresentacao.pptx, pagina.html
+examples/gerar_demo_office.py  gera relatorio.docx e apresentacao.pptx (python-docx/python-pptx, grupo dev)
 docs/superpowers/specs/ design da v0.1
 .claude/launch.json     configuração "marga" do preview do Claude Code (porta 8601, examples/demo)
 ```
@@ -81,7 +83,7 @@ command -v latexmk synctex pdflatex
 uv sync
 ```
 
-Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, PyMuPDF 2.1 e, no grupo `dev`, pytest 9.2), além do próprio pacote, que expõe o comando `marga`.
+Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, PyMuPDF 2.1 e, no grupo `dev`, pytest 9.2, python-docx 1.2 e python-pptx 1.0), além do próprio pacote, que expõe o comando `marga`. O app lê `.docx`, `.pptx` e `.html` só com a biblioteca padrão; python-docx e python-pptx servem para os testes simularem o agente e para gerar os exemplos do demo.
 
 - Não use `pip` e não edite o `uv.lock` à mão. Para mudar dependências, use `uv add`/`uv remove` e inclua `pyproject.toml` e `uv.lock` no mesmo commit.
 - O `pyproject.toml` aceita `streamlit>=1.40`, mas o código usa `streamlit.components.v2` (a spec cita o 1.67). Rode sempre pelo ambiente do lock, com `uv run`.
@@ -92,7 +94,7 @@ Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, P
 uv run pytest -q
 ```
 
-Esperado: `51 passed, 2 skipped` em cerca de 15 s, com TeX Live (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
+Esperado: `62 passed, 2 skipped` em cerca de 45 s, com TeX Live (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
 
 ## Tutorial: rodando o servidor pela primeira vez
 
@@ -144,7 +146,7 @@ Abra <http://localhost:8501>. Cada linha abaixo foi conferida no app:
 | # | Ação | O que deve aparecer |
 |---|---|---|
 | 1 | Abrir a página | Barra lateral com **Workspace (pasta)**, o botão **📁 Finder** (ou **📁 Escolher pasta…**, sem recentes), `✅ latexmk · ✅ synctex` e "Nenhum documento ainda."; no centro, "Adicione um documento na barra lateral…" |
-| 2 | **➕ Adicionar documento** → **Pasta** | A lista *Encontrados no workspace* traz `artigo/ · LaTeX (main.tex)`, `suplemento/ · LaTeX (main.tex)`, `parecer.pdf · PDF avulso` e `notas.md · texto` (as outras origens são **Enviar** e **Disco**) |
+| 2 | **➕ Adicionar documento** → **Pasta** | A lista *Encontrados no workspace* traz `artigo/ · LaTeX (main.tex)`, `suplemento/ · LaTeX (main.tex)`, `parecer.pdf · PDF avulso`, `apresentacao.pptx · PowerPoint`, `pagina.html · HTML`, `relatorio.docx · Word` e `notas.md · texto` (as outras origens são **Enviar** e **Disco**) |
 | 3 | Escolher `artigo/` e clicar em **Adicionar artigo** | Toast "A · artigo adicionado · LaTeX · v1". Com um documento só, as colunas mostram A-Fonte e A-PDF, e o PDF compila sozinho em 1 a 2 s: "✅ PDF da v1 · pdflatex · …" |
 | 4 | Clicar no número da linha 15 do fonte | Caixa "Seleção em A · artigo/main.tex:15 · v1" com **Tipo**, **Instrução para o agente** e **💬 Salvar comentário** |
 | 5 | Escrever um pedido e salvar | Toast "c1 criado em artigo/main.tex:15"; o comentário aparece em *Anotações de A* |
@@ -216,9 +218,10 @@ O `-sTCP:LISTEN` garante que só o servidor seja encerrado, e não um navegador 
   - `.marga/` e `uploads/` ganham um `.gitignore` com `*` (`workspace.ensure_gitignore`). O de `uploads/` só é criado quando não existe, e um arquivo esvaziado pelo usuário é respeitado.
   - Fora do workspace, o Marga só grava a lista de workspaces recentes (`core/folders.py`, na pasta de configuração do usuário ou em `MARGA_CONFIG_DIR`).
 - **Coordenadas:** caminhos relativos ao workspace, em formato POSIX; linhas começam em 1; colunas começam em 0 e contam code points (não bytes, nem UTF-16).
-- **Formatos são contratos.** `marga.bundle/v1`, `marga.response/v1` e `marga.project/v1` são lidos por outros agentes e por workspaces já existentes. Acrescentar chaves opcionais é seguro; renomear, remover ou mudar o sentido de uma chave exige subir a versão do schema e continuar lendo o formato antigo. `import_response` aceita apelidos (`comentarios`, `note`, `replacement`, `summary`): preserve-os. Ao mudar o pacote, atualize `RULES` e `AGENT_GUIDE` em `export.py`, os testes e o README.
+- **Formatos são contratos.** `marga.bundle/v1`, `marga.response/v1` e `marga.project/v1` são lidos por outros agentes e por workspaces já existentes. Acrescentar chaves opcionais é seguro; renomear, remover ou mudar o sentido de uma chave exige subir a versão do schema e continuar lendo o formato antigo. `import_response` aceita apelidos (`comentarios`, `note`, `replacement`, `summary`): preserve-os. Ao mudar o pacote, atualize `RULES` e `AGENT_GUIDE` em `export.py`, os testes e o README. Chaves opcionais já acrescentadas ao `marga.bundle/v1`: `abs_root`, `extracted_text` e `edit_hint` nos documentos; `slide` (PowerPoint) e `file_lines` (HTML) nas anotações.
 - **LaTeX:** `latexmk` com `-interaction=nonstopmode -file-line-error -synctex=1`, timeout de 600 s (projetos do Overleaf com muitas figuras levam minutos) e um outdir por documento e versão (`.marga/build/<doc>/v<n>/out`). Nunca acrescente `-shell-escape`: os documentos são entrada não confiável.
-- **Versionamento:** só extensões de `TEXT_EXTS` (em `versions.py`), até 5 MB por arquivo; as pastas de `SKIP_DIRS` são ignoradas.
+- **Versionamento:** só extensões de `TEXT_EXTS` (em `versions.py`), até 5 MB por arquivo; as pastas de `SKIP_DIRS` são ignoradas. PDF avulso, Word, PowerPoint e HTML são documentos de um arquivo só, guardado inteiro.
+- **Word, PowerPoint e HTML** (`core/formats.py`): o texto revisado é extraído do arquivo (um parágrafo, item ou linha de tabela por linha; `# ` títulos, `- ` itens, `=== slide N ===`) e guardado como blob na versão (`Version.extracted`). As âncoras, o diff e a re-ancoragem usam esse texto, e o agente edita o próprio arquivo, localizando o trecho pela citação. Mudar a extração muda o texto das próximas versões, não das já registradas: trate a saída como contrato e cubra a mudança em `tests/test_formats.py`. Os `.docx`/`.pptx` são entrada não confiável: só `zipfile` + `ElementTree`, com limite de tamanho por parte (`MAX_PART_BYTES`).
 - **Streamlit:**
   - Para mudar o valor de um widget por código, use `state.request(key, value)`: ele é aplicado no início da próxima execução por `apply_pending`. Atribuir a `st.session_state[key]` depois que o widget foi desenhado dá erro.
   - Chaves de widgets que precisam sobreviver à troca de aba devem casar com a regex `_KEEP` de `ui/state.py`, porque o Streamlit descarta o estado de widgets que não foram desenhados.
@@ -241,7 +244,8 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 | `tests/test_zip_import.py` | `.zip` no formato do Overleaf (subpastas, figura, `.bib`, lixo do macOS), caminhos inseguros, nome digitado no envio, caminho colado do terminal, `.zip` novo como próxima versão (e as recusas), `.gitignore` de `.marga/` e `uploads/` (com `git status` de verdade), compilação com figuras e seções, figuras por hard link em versões antigas |
 | `tests/test_folders.py` | workspaces recentes (ordem, limite, pastas apagadas, arquivo corrompido) e o seletor de pastas de cada sistema, inclusive cancelar |
 | `tests/test_outline.py` | títulos pela tipografia (folha de rosto, sumário e notas ficam de fora), marcadores, seções do fonte (`\include` comentado, `\section*`, apêndice) e páginas de cada seção |
-| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente |
+| `tests/test_formats.py` | texto de Word (títulos, listas, tabelas, revisões, campos, notas de rodapé, caixas de texto), PowerPoint (ordem da apresentação, grupos, tabelas, notas, slide oculto) e HTML (estrutura e linhas do arquivo); erros legíveis; o agente editando `.docx`/`.pptx` com python-docx/python-pptx e a re-ancoragem (com o slide); links entre todos os tipos no pacote; arquivos de trava `~$` e envios |
+| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente; Word, PowerPoint e HTML lado a lado, com links e "ir para slide" |
 
 - As fixtures `demo_ws` e `text_ws` (em `tests/conftest.py`) criam workspaces em `tmp_path`. Testes novos nunca devem escrever em `examples/demo/`.
 - A fixture automática `isolated_config` aponta `MARGA_CONFIG_DIR` para `tmp_path`: nenhum teste mexe nos workspaces recentes reais.
@@ -287,6 +291,7 @@ feat/<nome> ou fix/<nome>  →  dev  →  main
 | "Nada mudou no disco desde a vN" | `register_version` foi chamado sem mudanças; é o comportamento esperado. |
 | A mudança no JS/CSS não aparece | Os arquivos do frontend são lidos na importação. Reinicie o servidor. |
 | `ModuleNotFoundError: No module named 'streamlit.components.v2'` | Streamlit antigo, fora do lock. Rode `uv sync` e use `uv run`. |
+| "não consegui abrir o arquivo como Word (.docx)" (ou PowerPoint) | O arquivo é `.doc`/`.ppt` antigo, tem senha ou está corrompido. Peça ao usuário para salvá-lo como `.docx`/`.pptx` sem senha. |
 | **📁 Finder** não abre nada | O seletor abre no computador do servidor, às vezes atrás da janela do navegador. No Linux, ele precisa do `zenity` ou do `kdialog`; sem os dois, o botão não aparece. |
 | Windows | O código usa chamadas POSIX (`os.killpg`). Use macOS, Linux ou WSL. |
 
@@ -298,5 +303,6 @@ Se pediram para você aplicar uma revisão feita no Marga (e não para mexer no 
 2. Edite os arquivos direto no disco, nos caminhos da seção *Onde editar* do pacote, mudando só o necessário. Num projeto importado de `.zip`, edite a cópia em `uploads/<nome>/`: não gere `.zip` nem aplique as mudanças em outra cópia (Overleaf, Downloads), porque o Marga só enxerga o disco. Os números de linha valem para o que está no disco; se as linhas mudarem enquanto você edita, ache o trecho pela citação exata.
 3. Respeite os tipos: `pergunta` se responde na nota, sem editar; `nao_alterar` protege o trecho; `nota` é só contexto. Siga também as relações dos links.
 4. Mantenha o LaTeX compilável e aplique as sugestões literalmente.
-5. Escreva `.marga/rounds/NNN/response.json` no formato da seção *Resposta* do pacote.
-6. Não altere mais nada em `.marga/` e não registre versões: quem registra a vN+1 é o usuário, no app.
+5. Word, PowerPoint e HTML: as linhas do pacote são do texto que o Marga extraiu, não do arquivo. Edite o próprio `.docx`/`.pptx` (por exemplo, com python-docx ou python-pptx), trocando só o texto e preservando a formatação, e o `.html` no código-fonte (cada comentário traz as linhas do arquivo). Se não conseguir editar um `.docx`/`.pptx`, devolva o texto em `substituicao`.
+6. Escreva `.marga/rounds/NNN/response.json` no formato da seção *Resposta* do pacote.
+7. Não altere mais nada em `.marga/` e não registre versões: quem registra a vN+1 é o usuário, no app.
