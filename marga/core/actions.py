@@ -5,10 +5,12 @@ A interface chama só estas funções; elas também são o que os testes exercit
 
 from __future__ import annotations
 
+import filecmp
 import io
 import os
 import shlex
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
@@ -74,8 +76,8 @@ def discover(ws: Workspace, max_depth: int = 3) -> list[Candidate]:
                 pdfs.append(path)
             elif ext in TEXT_DOC_EXTS:
                 texts.append(ws.rel(path))
-    if (ws.root / "uploads").is_dir():
-        for path in sorted((ws.root / "uploads").iterdir()):
+    if ws.uploads.is_dir():
+        for path in sorted(ws.uploads.iterdir()):
             if path.suffix.lower() == ".pdf":
                 pdfs.append(path)
             elif path.suffix.lower() in TEXT_DOC_EXTS:
@@ -178,7 +180,7 @@ def _unique(path: Path, keep_suffix: bool = True) -> Path:
 
 def _upload_target(ws: Workspace, filename: str) -> Path:
     safe = _safe_name(filename)
-    folder = ws.root / "uploads"
+    folder = ws.ensure_uploads()
     if Path(safe).suffix.lower() == ".tex":  # um .tex avulso ganha a própria pasta (é a raiz do documento)
         folder = _unique(folder / Path(safe).stem, keep_suffix=False)
     folder.mkdir(parents=True, exist_ok=True)
@@ -189,7 +191,7 @@ def _discard_import(ws: Workspace, rel: str) -> None:
     path = ws.abspath(rel)
     path.unlink(missing_ok=True)
     parent = path.parent
-    if parent != ws.root / "uploads" and parent.parent == ws.root / "uploads" and not any(parent.iterdir()):
+    if parent != ws.uploads and parent.parent == ws.uploads and not any(parent.iterdir()):
         parent.rmdir()
 
 
@@ -207,7 +209,7 @@ def import_zip(ws: Workspace, source: str | Path | BinaryIO, filename: str, name
     arquivos, figuras e bibliografia; só com textos (.md/.txt), vira um documento de texto.
     """
     stem = Path(_safe_name(filename)).stem or "projeto"
-    folder = _unique(ws.root / "uploads" / stem, keep_suffix=False)
+    folder = _unique(ws.ensure_uploads() / stem, keep_suffix=False)
     extract_zip(source, folder)
     try:
         rel = ws.rel(folder)
@@ -285,6 +287,81 @@ def import_path(ws: Workspace, raw: str, name: str | None = None) -> Document:
 
 def remove_document(ws: Workspace, doc_id: str) -> None:
     ws.delete_doc(doc_id)
+
+
+# ------------------------------------------------- nova versão por .zip
+@dataclass
+class ZipUpdate:
+    """O que um .zip novo mudou na cópia de um documento (caminhos relativos ao workspace)."""
+
+    doc: str
+    changed: list[str] = field(default_factory=list)
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)  # textos versionados que não vieram no .zip
+    report: RegisterReport | None = None
+
+    def summary(self) -> str:
+        parts = [f"{len(self.changed)} alterado(s)", f"{len(self.added)} novo(s)"]
+        if self.removed:
+            parts.append(f"{len(self.removed)} removido(s)")
+        head = self.report.summary() if self.report else f"{self.doc}: nenhum texto mudou, a versão continua a mesma"
+        return f"{head} · do .zip: {', '.join(parts)}"
+
+
+def zip_targets(ws: Workspace) -> list[Document]:
+    """Documentos que aceitam um .zip como próxima versão: os de pasta que o Marga criou em ``uploads/``."""
+    uploads = ws.uploads.resolve()
+    return [d for d in ws.docs()
+            if d.kind in ("latex", "text") and not d.single and ws.abspath(d.root).is_dir()
+            and ws.abspath(d.root).resolve().is_relative_to(uploads)]
+
+
+def update_from_zip(ws: Workspace, doc_id: str, source: str | Path | BinaryIO, filename: str = "") -> ZipUpdate:
+    """Registra um .zip (por exemplo, o projeto baixado de novo do Overleaf) como a próxima versão do documento.
+
+    Os arquivos do .zip substituem os da cópia em ``uploads/``. Os textos versionados que não vieram no .zip
+    saem da cópia (a versão anterior continua guardada no Marga); figuras e outros arquivos que sumiram ficam,
+    para as versões antigas continuarem compilando. A versão nova responde à rodada pendente, como quando o
+    agente edita o disco.
+    """
+    doc = ws.get_doc(doc_id)
+    if doc.id not in {d.id for d in zip_targets(ws)}:
+        raise MargaError(f"{doc.label} usa arquivos seus, fora de uploads/: o Marga não os sobrescreve. Só os "
+                         "documentos enviados ou importados (cópias em uploads/) recebem um .zip novo.")
+    status = doc_status(ws, doc)
+    if status.latest is None:
+        raise MargaError(f"{doc.label} não tem versão registrada.")
+    n = status.latest.n
+    if status.dirty:
+        raise MargaError(f"{len(status.changed)} arquivo(s) de {doc.label} mudaram no disco desde a v{n}; "
+                         f"registre a v{n + 1} antes de enviar um .zip novo.")
+    root = ws.abspath(doc.root)
+    with tempfile.TemporaryDirectory(dir=ws.dir) as tmp:
+        unpacked = Path(tmp) / "zip"
+        incoming = {ws.rel(root / rel): unpacked / rel for rel in extract_zip(source, unpacked)}
+        if doc.main and doc.main not in incoming:
+            raise MargaError(f"O .zip não tem {Path(doc.main).relative_to(doc.root).as_posix()}, o arquivo principal "
+                             f"de {doc.label}: confira se é o mesmo projeto.")
+        update = ZipUpdate(doc.id)
+        for rel in sorted(incoming):
+            target = ws.abspath(rel)
+            if not target.is_file():
+                update.added.append(rel)
+            elif not filecmp.cmp(incoming[rel], target, shallow=False):
+                update.changed.append(rel)
+        update.removed = sorted(p for p in status.latest.files if p not in incoming)
+        if not (update.changed or update.added or update.removed):
+            raise MargaError(f"O .zip é igual à v{n} de {doc.label}: nada a registrar.")
+        for rel in update.changed + update.added:
+            target = ws.abspath(rel)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.unlink(missing_ok=True)  # arquivo novo: as versões antigas que usam hard link não mudam
+            shutil.move(incoming[rel], target)
+        for rel in update.removed:
+            ws.abspath(rel).unlink(missing_ok=True)
+    if doc_status(ws, doc).dirty:
+        update.report = register_version(ws, doc.id, note=f"enviada como {filename}" if filename else "enviada como .zip")
+    return update
 
 
 # ------------------------------------------------------------- versões

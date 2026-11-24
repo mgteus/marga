@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -107,3 +108,59 @@ def forward(pdf: str | Path, src: str | Path, line: int, cwd: str | Path) -> lis
     if not pdf.exists():
         return []
     return list(_forward_cached(str(pdf), pdf.stat().st_mtime, str(Path(src).resolve()), int(line), str(cwd)))
+
+
+# ------------------------------------------------------------------ figuras
+# Para um \includegraphics escalado (width=0.48\linewidth…), o SyncTeX mede a figura no tamanho natural: a
+# borda esquerda e a linha de base (h, v) estão certas, mas a largura e a altura podem passar da página. E,
+# num ponto dentro da imagem, a busca inversa devolve a linha 0. TOL é a folga, em pontos, para casar (h, v)
+# com o canto inferior esquerdo da imagem desenhada.
+TOL = 3.0
+_GRAPHICS = re.compile(r"\\includegraphics\b")
+_TEX_COMMENT = re.compile(r"(?<!\\)%.*")
+
+
+def _is_image_of(box: SyncBox, img: tuple[float, float, float, float]) -> bool:
+    return abs(box.v - img[3]) <= TOL and abs(box.h - img[0]) <= TOL
+
+
+def fit_images(boxes: list[SyncBox], images: list[tuple[float, float, float, float]]) -> list[tuple]:
+    """Caixas → retângulos, trocando a caixa de cada imagem pela área real dela na página.
+
+    A caixa da linha que contém as imagens (\\begin{figure}, \\centering) vale pelas imagens que ela contém, a
+    menos que alguma imagem já tenha sido achada pela caixa do próprio \\includegraphics.
+    """
+    matched = list(dict.fromkeys(img for b in boxes for img in images if _is_image_of(b, img)))
+    out = list(matched)
+    for b in boxes:
+        if any(_is_image_of(b, img) for img in images):
+            continue
+        inside = [img for img in images if abs(b.v - img[3]) <= TOL and b.h - TOL <= img[0] <= b.h + b.width]
+        if not inside:
+            out.append(b.rect)
+        elif not matched:
+            out += [img for img in inside if img not in out]
+    return out
+
+
+def figure_lines(text: str) -> list[int]:
+    """Linhas do fonte com \\includegraphics fora de comentário."""
+    return [i for i, line in enumerate(text.splitlines(), start=1) if _GRAPHICS.search(_TEX_COMMENT.sub("", line))]
+
+
+def figure_at(pdf: str | Path, page: int, x: float, y: float, src: str | Path, text: str,
+              cwd: str | Path) -> int | None:
+    """Linha do \\includegraphics da figura sob o ponto, para quando a busca inversa só devolve a linha 0.
+
+    Vale a figura com a linha de base logo abaixo do ponto e, entre figuras lado a lado, a de borda esquerda
+    mais próxima à esquerda do ponto.
+    """
+    best, best_key = None, None
+    for line in figure_lines(text):
+        for b in forward(pdf, src, line, cwd):
+            if b.page != page or b.h - TOL > x or b.v + TOL < y:
+                continue
+            key = (b.v - y, -b.h)
+            if best_key is None or key < best_key:
+                best, best_key = line, key
+    return best

@@ -20,8 +20,10 @@ RESPONSE_SCHEMA = "marga.response/v1"
 MAX_DIFF_LINES = 400
 
 RULES = [
-    "Edite os arquivos no lugar; os caminhos são relativos ao workspace. Mude só o necessário para atender "
-    "cada comentário: não reformate, não reordene e não reescreva o resto.",
+    "Edite os arquivos direto no disco, nos caminhos listados em Onde editar; os caminhos do pacote são "
+    "relativos ao workspace. O Marga só enxerga mudanças nesses caminhos: não gere .zip, não edite outra cópia "
+    "do projeto (Overleaf, Downloads, um clone) e não renomeie nem mova arquivos.",
+    "Mude só o necessário para atender cada comentário: não reformate, não reordene e não reescreva o resto.",
     "Os números de linha valem para a versão indicada, que é exatamente o que está no disco agora. Se as "
     "linhas mudarem enquanto você edita, localize o trecho pela citação exata.",
     "Tipos: corrigir, reescrever, remover e inserir pedem edição; pergunta pede uma resposta na nota, sem "
@@ -48,8 +50,12 @@ Este workspace é revisado com o Marga. Cada rodada de revisão fica em `.marga/
 
 A rodada mais recente também está em `.marga/rounds/latest.md` e `.marga/rounds/latest.json`.
 
-Fluxo: leia o pacote, edite os arquivos no lugar e escreva o `response.json`. O Marga detecta a
+Fluxo: leia o pacote, edite os arquivos direto no disco e escreva o `response.json`. O Marga detecta a
 mudança no disco, registra a nova versão, re-ancora os comentários e compara com a versão anterior.
+
+Onde editar: nos caminhos da seção *Onde editar* do pacote, dentro deste workspace. Projetos importados de um
+`.zip` (do Overleaf, por exemplo) viram uma cópia em `uploads/<nome>/`, e é essa cópia que se edita. Não gere
+`.zip` nem aplique as mudanças em outra cópia do projeto, como o Overleaf: o Marga só enxerga o disco.
 """
 
 
@@ -206,7 +212,8 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
         prev = previous_version(ws, doc.id, latest.n)
         entry = {
             "id": doc.id, "name": doc.name, "kind": doc.kind, "kind_label": doc.kind_label,
-            "root": doc.root, "main": doc.main, "engine": doc.engine if doc.kind == "latex" else None,
+            "root": doc.root, "abs_root": str(ws.root / doc.root), "main": doc.main,
+            "engine": doc.engine if doc.kind == "latex" else None,
             "version": latest.n, "version_origin": latest.origin,
             "previous_version": prev.n if prev else None,
             "files": sorted(latest.files), "editable": doc.kind != "pdf",
@@ -384,6 +391,22 @@ def _mermaid(b: dict) -> str:
     return "\n".join(lines)
 
 
+PDF_NO_SOURCE = "PDF avulso, sem fonte para editar: devolva o texto corrigido em substituicao"
+
+
+def _edit_targets(b: dict) -> list[tuple[dict, str]]:
+    """Onde editar cada documento: o caminho absoluto (pasta com / no fim) ou o aviso do PDF avulso."""
+    out = []
+    for d in b["documents"]:
+        where = d.get("abs_root") or f"{b['workspace']}/{d['root']}"
+        if not d["editable"]:
+            where = PDF_NO_SOURCE
+        elif d["files"] != [d["root"]]:  # documento de pasta (os de um arquivo só têm o próprio arquivo)
+            where = where.rstrip("/") + "/"
+        out.append((d, where))
+    return out
+
+
 def render_markdown(b: dict) -> str:
     docs = {d["id"]: d for d in b["documents"]}
     comments = [a for a in b["annotations"] if a["kind"] == "comment"]
@@ -396,6 +419,18 @@ def render_markdown(b: dict) -> str:
         "Documentos: " + " · ".join(f"**{d['id']}** {d['name']} (v{d['version']})" for d in b["documents"]),
         "",
         f"Comentários abertos: {len(comments)} · marcas: {len(marks)} · links: {len(b['links'])}",
+        "",
+        "## Onde editar",
+        "",
+        "Edite os arquivos direto no disco. O Marga só enxerga mudanças nestes caminhos:",
+        "",
+    ]
+    for d, where in _edit_targets(b):
+        out.append(f"- **{d['id']}** · {d['name']} · {d['kind_label']}: " + (f"`{where}`" if d["editable"] else where))
+    out += [
+        "",
+        "Não gere `.zip`, não edite outra cópia do projeto (Overleaf, Downloads, um clone) e não renomeie nem "
+        "mova arquivos.",
         "",
         "## Como agir",
         "",
@@ -564,6 +599,13 @@ def render_html(b: dict) -> str:
         f"<h1>Marga · rodada {b['round']}</h1>",
         f"<p class='meta'>Gerado em {_e(b['created_at'])} · workspace <code>{_e(b['workspace'])}</code><br>",
         f"{len(comments)} comentário(s) aberto(s) · {len(marks)} marca(s) · {len(b['links'])} link(s)</p>",
+        "<h2>Onde editar</h2><p>Edite os arquivos direto no disco. O Marga só enxerga mudanças nestes caminhos:</p>"
+        "<ul>" + "".join(
+            f"<li><b>{_e(d['id'])}</b> · {_e(d['name'])} · {_e(d['kind_label'])}: "
+            + (f"<code>{_e(where)}</code>" if d["editable"] else _e(where)) + "</li>"
+            for d, where in _edit_targets(b)
+        ) + "</ul><p>Não gere <code>.zip</code>, não edite outra cópia do projeto (Overleaf, Downloads, um clone) "
+        "e não renomeie nem mova arquivos.</p>",
         "<h2>Como agir</h2><ol>" + "".join(f"<li>{_e(r)}</li>" for r in b["rules"]) + "</ol>",
     ]
     if b["instructions"]:
@@ -629,12 +671,18 @@ def render_html(b: dict) -> str:
 
 # --------------------------------------------------------------- exportar
 def agent_prompt(ws: Workspace, info: RoundInfo) -> str:
+    """Prompt para colar no agente: onde está o pacote, onde editar e onde deixar a resposta."""
     rel = f".marga/rounds/{info.dirname}"
-    return (
-        f"Estou revisando os documentos do workspace {ws.root} com o Marga. Leia {rel}/bundle.md e aplique os "
-        f"comentários editando os arquivos no lugar, seguindo as regras do pacote. Ao terminar, escreva "
-        f"{rel}/response.json no formato descrito na seção Resposta do pacote."
-    )
+    docs = {d.id: d for d in ws.docs()}
+    where = [f"- {docs[i].label}: {ws.root / docs[i].root}" for i in info.docs if i in docs and docs[i].kind != "pdf"]
+    lines = [f"Estou revisando os documentos do workspace {ws.root} com o Marga. Leia {rel}/bundle.md e aplique os "
+             "comentários seguindo as regras do pacote."]
+    if where:
+        lines += ["Edite os arquivos direto no disco, nestes caminhos:", *where,
+                  "O Marga só enxerga mudanças nesses caminhos: não gere .zip, não edite outra cópia do projeto "
+                  "(Overleaf, Downloads, um clone) e não renomeie arquivos."]
+    lines.append(f"Ao terminar, escreva {rel}/response.json no formato descrito na seção Resposta do pacote.")
+    return "\n".join(lines)
 
 
 def export_round(ws: Workspace, instructions: str = "", include_sources: bool = False) -> RoundInfo:

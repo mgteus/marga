@@ -6,15 +6,19 @@ O teste com um .zip real roda só quando ``MARGA_ZIP`` aponta para ele, por exem
 """
 
 import io
+import json
 import os
+import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
 import pymupdf
 import pytest
 
-from marga.core import actions, latex, outline, synctex
-from marga.core.versions import get_version, latest_version
+from marga.core import actions, export, latex, outline, synctex
+from marga.core.anchors import lines_anchor
+from marga.core.versions import get_version, latest_version, version_text
 from marga.core.workspace import MargaError, Workspace
 
 needs_tex = pytest.mark.skipif(not latex.can_compile(), reason="latexmk ausente")
@@ -148,6 +152,89 @@ def test_import_path_accepts_a_path_pasted_from_the_terminal(ws, tmp_path):
         actions.import_path(ws, str(tmp_path / "Downloads"))
     with pytest.raises(MargaError, match="Não encontrei"):
         actions.import_path(ws, str(tmp_path / "nada.zip"))
+
+
+def test_marga_state_and_uploads_get_a_gitignore(ws):
+    assert (ws.dir / ".gitignore").read_text(encoding="utf-8").endswith("*\n")
+    assert not ws.uploads.exists()  # uploads/ só nasce com o primeiro envio
+    actions.import_upload(ws, "nota.md", b"# Nota\n")
+    ignore = ws.uploads / ".gitignore"
+    assert ignore.read_text(encoding="utf-8").endswith("*\n")
+    ignore.write_text("", encoding="utf-8")  # quem quer versionar as cópias esvazia o arquivo
+    actions.import_upload(ws, "outra.md", b"# Outra\n")
+    Workspace.open(ws.root)
+    assert ignore.read_text(encoding="utf-8") == ""
+    (ws.dir / ".gitignore").unlink()
+    ignore.unlink()
+    Workspace.open(ws.root)  # workspace criado antes desta versão: ganha os dois ao abrir
+    assert (ws.dir / ".gitignore").exists() and ignore.exists()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git ausente")
+def test_git_status_of_the_workspace_ignores_marga_and_uploads(ws, tmp_path):
+    subprocess.run(["git", "init", "-q", str(ws.root)], check=True)
+    (ws.root / "notas.txt").write_text("minhas notas\n", encoding="utf-8")
+    actions.import_zip(ws, overleaf_zip(tmp_path / "proj.zip"), "proj.zip")
+    out = subprocess.run(["git", "-C", str(ws.root), "status", "--porcelain", "--untracked-files=all"],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.splitlines() == ["?? notas.txt"]
+
+
+def _zip(path: Path, files: dict[str, bytes | str]) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        for name, data in files.items():
+            zf.writestr(name, data)
+    return path
+
+
+def test_new_zip_becomes_the_next_version_and_answers_the_round(ws, tmp_path):
+    doc = actions.import_zip(ws, overleaf_zip(tmp_path / "Dissertacao (4).zip"), "Dissertacao (4).zip")
+    root = doc.root
+    metodos = f"{root}/capitulos/metodos.tex"
+    text = version_text(ws, doc, latest_version(ws, doc.id), metodos)
+    c1 = actions.create_annotation(ws, doc.id, lines_anchor(text, metodos, 1, 9, 9), "corrigir", "são 1.250")
+    info = export.export_round(ws)
+    export.response_path(ws, info.n).write_text(json.dumps(
+        {"round": info.n, "comments": {c1.id: {"status": "feito", "nota": "corrigido no Overleaf"}}}), encoding="utf-8")
+
+    # a revisão foi aplicada no Overleaf, e o projeto voltou como outro .zip (desta vez dentro de uma pasta):
+    # metodos.tex e main.tex mudaram, entrou um apêndice, saíram o rascunho e a figura
+    new = _zip(tmp_path / "Dissertacao (6).zip", {
+        "proj/main.tex": MAIN.replace(r"\include{capitulos/metodos}",
+                                      "\\include{capitulos/metodos}\n\\include{capitulos/apendice}"),
+        "proj/capitulos/introducao.tex": INTRO,
+        "proj/capitulos/metodos.tex": METODOS.replace("1.200", "1.250"),
+        "proj/capitulos/apendice.tex": "\\section{Apêndice}\n",
+        "proj/refs.bib": REFS,
+    })
+    update = actions.update_from_zip(ws, doc.id, new, "Dissertacao (6).zip")
+    assert update.changed == [metodos, f"{root}/main.tex"]
+    assert update.added == [f"{root}/capitulos/apendice.tex"]
+    assert update.removed == [f"{root}/capitulos/rascunho.tex"]
+    report = update.report
+    assert (report.version.n, report.version.origin, report.round, report.imported) == (2, "agente", 1, 1)
+    assert "Dissertacao (6).zip" in report.version.note and [d.id for d in ws.docs()] == [doc.id]
+    assert f"{root}/capitulos/rascunho.tex" not in report.version.files
+    assert f"{root}/capitulos/rascunho.tex" in get_version(ws, doc.id, 1).files  # a v1 continua guardada
+    assert ws.abspath(f"{root}/figuras/grafico.png").exists()  # a figura fica, para a v1 compilar
+    assert ws.get_annotation(c1.id).anchor.version == 2
+    with pytest.raises(MargaError, match="igual à v2"):
+        actions.update_from_zip(ws, doc.id, new, "Dissertacao (6).zip")
+
+
+def test_zip_update_refuses_other_documents_wrong_projects_and_unregistered_changes(ws, tmp_path):
+    (ws.root / "tese").mkdir()
+    (ws.root / "tese" / "main.tex").write_text(MAIN, encoding="utf-8")
+    own = actions.add_document(ws, "tese")
+    doc = actions.import_zip(ws, overleaf_zip(tmp_path / "proj.zip"), "proj.zip")
+    assert [d.id for d in actions.zip_targets(ws)] == [doc.id]
+    with pytest.raises(MargaError, match="fora de uploads"):
+        actions.update_from_zip(ws, own.id, overleaf_zip(tmp_path / "outro.zip"))
+    with pytest.raises(MargaError, match="arquivo principal"):
+        actions.update_from_zip(ws, doc.id, _zip(tmp_path / "errado.zip", {"tese.tex": MAIN}))
+    ws.abspath(f"{doc.root}/refs.bib").write_text(REFS + "% editado\n", encoding="utf-8")
+    with pytest.raises(MargaError, match="registre a v2"):
+        actions.update_from_zip(ws, doc.id, overleaf_zip(tmp_path / "de-novo.zip"))
 
 
 @needs_synctex

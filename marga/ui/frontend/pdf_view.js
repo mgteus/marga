@@ -16,12 +16,15 @@ function drawRects(root) {
   const layer = root.querySelector(".mg-layer");
   const W = d.w || 1;
   const H = d.h || 1;
+  // O servidor já recorta as marcas à página; o recorte aqui é só uma segunda garantia.
+  const clamp = (value, max) => Math.min(Math.max(value, 0), max);
   layer.innerHTML = (d.rects || [])
+    .filter((r) => clamp(r.x1, W) > clamp(r.x0, W) && clamp(r.y1, H) > clamp(r.y0, H))
     .map((r) => {
-      const left = (r.x0 / W) * 100;
-      const top = (r.y0 / H) * 100;
-      const width = ((r.x1 - r.x0) / W) * 100;
-      const height = ((r.y1 - r.y0) / H) * 100;
+      const left = (clamp(r.x0, W) / W) * 100;
+      const top = (clamp(r.y0, H) / H) * 100;
+      const width = ((clamp(r.x1, W) - clamp(r.x0, W)) / W) * 100;
+      const height = ((clamp(r.y1, H) - clamp(r.y0, H)) / H) * 100;
       const tag = r.label ? `<span class="mg-tag" data-id="${esc(r.id)}">${esc(r.label)}</span>` : "";
       return `<div class="mg-rect mg-${esc(r.kind || "a")}" style="left:${left}%;top:${top}%;width:${width}%;height:${height}%">${tag}</div>`;
     })
@@ -33,10 +36,11 @@ function bind(root) {
   const st = root._mg;
   const page = root.querySelector(".mg-page");
   const drag = root.querySelector(".mg-drag");
+  // Arrastar para fora da página não leva a seleção junto: o ponto fica preso à borda.
   const toPoint = (ev) => {
     const box = page.getBoundingClientRect();
-    const px = ev.clientX - box.left;
-    const py = ev.clientY - box.top;
+    const px = Math.min(Math.max(ev.clientX - box.left, 0), box.width);
+    const py = Math.min(Math.max(ev.clientY - box.top, 0), box.height);
     return { px, py, x: (px / box.width) * st.data.w, y: (py / box.height) * st.data.h };
   };
   page.addEventListener("pointerdown", (ev) => {

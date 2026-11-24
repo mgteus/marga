@@ -41,6 +41,21 @@ def test_export_round_writes_bundle(text_ws):
     assert (text_ws.dir / "rounds" / "latest.md").exists() and (text_ws.dir / "AGENT.md").exists()
 
 
+def test_bundle_and_prompt_say_where_to_edit(text_ws):
+    _setup(text_ws)
+    info = export.export_round(text_ws)
+    rdir = export.round_dir(text_ws, info.n)
+    bundle = json.loads((rdir / "bundle.json").read_text(encoding="utf-8"))
+    assert next(d for d in bundle["documents"] if d["id"] == "A")["abs_root"] == str(text_ws.root / "doc")
+    md = (rdir / "bundle.md").read_text(encoding="utf-8")
+    assert md.index("## Onde editar") < md.index("## Como agir")
+    assert f"`{text_ws.root / 'doc'}/`" in md and f"`{text_ws.root / 'outro.md'}`" in md and "Não gere `.zip`" in md
+    assert "Onde editar" in (rdir / "bundle.html").read_text(encoding="utf-8")
+    prompt = export.agent_prompt(text_ws, info)
+    assert f"- A · doc: {text_ws.root / 'doc'}" in prompt and "não gere .zip" in prompt
+    assert "Onde editar" in (text_ws.dir / "AGENT.md").read_text(encoding="utf-8")
+
+
 def test_export_is_blocked_when_disk_changed(text_ws):
     _setup(text_ws)
     (text_ws.root / "doc" / "a.txt").write_text("mudou\n", encoding="utf-8")

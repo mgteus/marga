@@ -41,7 +41,8 @@ marga/
 │   ├── pdf.py          render de página, palavras numa região, texto de PDF avulso
 │   ├── outline.py      seções: fonte LaTeX + SyncTeX, marcadores do PDF ou títulos pela tipografia
 │   ├── zipimport.py    extração segura de .zip (pacotes do Overleaf)
-│   ├── actions.py      operações de alto nível (o que a UI chama e os testes exercitam)
+│   ├── folders.py      seletor de pastas do sistema (Finder) e workspaces recentes
+│   ├── actions.py      operações de alto nível (o que a UI chama e os testes exercitam), inclusive .zip como nova versão
 │   └── export.py       rodada (bundle JSON/MD/HTML), RULES, AGENT_GUIDE, importação da resposta
 └── ui/
     ├── main.py         layout: barra lateral + abas Revisão, Links, Comparar versões, Rodadas
@@ -91,7 +92,7 @@ Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, P
 uv run pytest -q
 ```
 
-Esperado na v0.1: `22 passed` em cerca de 7 s, com TeX Live. Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
+Esperado: `51 passed, 2 skipped` em cerca de 15 s, com TeX Live (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
 
 ## Tutorial: rodando o servidor pela primeira vez
 
@@ -142,7 +143,7 @@ Abra <http://localhost:8501>. Cada linha abaixo foi conferida no app:
 
 | # | Ação | O que deve aparecer |
 |---|---|---|
-| 1 | Abrir a página | Barra lateral com **Workspace (pasta)**, `✅ latexmk · ✅ synctex` e "Nenhum documento ainda."; no centro, "Adicione um documento na barra lateral…" |
+| 1 | Abrir a página | Barra lateral com **Workspace (pasta)**, o botão **📁 Finder** (ou **📁 Escolher pasta…**, sem recentes), `✅ latexmk · ✅ synctex` e "Nenhum documento ainda."; no centro, "Adicione um documento na barra lateral…" |
 | 2 | **➕ Adicionar documento** → **Pasta** | A lista *Encontrados no workspace* traz `artigo/ · LaTeX (main.tex)`, `suplemento/ · LaTeX (main.tex)`, `parecer.pdf · PDF avulso` e `notas.md · texto` (as outras origens são **Enviar** e **Disco**) |
 | 3 | Escolher `artigo/` e clicar em **Adicionar artigo** | Toast "A · artigo adicionado · LaTeX · v1". Com um documento só, as colunas mostram A-Fonte e A-PDF, e o PDF compila sozinho em 1 a 2 s: "✅ PDF da v1 · pdflatex · …" |
 | 4 | Clicar no número da linha 15 do fonte | Caixa "Seleção em A · artigo/main.tex:15 · v1" com **Tipo**, **Instrução para o agente** e **💬 Salvar comentário** |
@@ -210,7 +211,10 @@ O `-sTCP:LISTEN` garante que só o servidor seja encerrado, e não um navegador 
 - **Regra de negócio fica no núcleo.** Operação nova vai para `core/actions.py` (ou para o módulo certo do núcleo), com teste em pytest; a UI só chama e mostra.
 - **Escrita em `.marga/` só pelos helpers.** Use `write_json`/`write_text`/`write_bytes` de `workspace.py` (arquivo temporário + rename) e faça ler-modificar-gravar dentro de `_LOCK`. JSON corrompido levanta `MargaError` e nunca é sobrescrito; mantenha assim.
 - **Erros esperados são `MargaError`**, com mensagem em português pronta para o usuário. A UI captura e mostra com `st.error`.
-- **O Marga nunca edita os documentos do usuário.** Ele só escreve em `.marga/` e cria arquivos novos em `uploads/` (envios, cópias do disco e `.zip` extraídos em `uploads/<nome>/`; nada sobrescreve: nomes repetidos ganham `-2`, `-3`…). Qualquer recurso que altere os arquivos do usuário é mudança de design: pergunte antes.
+- **O Marga nunca edita os documentos do usuário.** Ele só escreve em `.marga/` e em `uploads/` (envios, cópias do disco e `.zip` extraídos em `uploads/<nome>/`; nomes repetidos ganham `-2`, `-3`…). Qualquer recurso que altere os arquivos do usuário é mudança de design: pergunte antes.
+  - A única sobrescrita é a de `actions.update_from_zip`, um `.zip` enviado como nova versão. Ela vale só para documentos que já são cópias do Marga em `uploads/` (`actions.zip_targets`). Os textos versionados que não vêm no `.zip` saem da cópia, e as figuras ficam.
+  - `.marga/` e `uploads/` ganham um `.gitignore` com `*` (`workspace.ensure_gitignore`). O de `uploads/` só é criado quando não existe, e um arquivo esvaziado pelo usuário é respeitado.
+  - Fora do workspace, o Marga só grava a lista de workspaces recentes (`core/folders.py`, na pasta de configuração do usuário ou em `MARGA_CONFIG_DIR`).
 - **Coordenadas:** caminhos relativos ao workspace, em formato POSIX; linhas começam em 1; colunas começam em 0 e contam code points (não bytes, nem UTF-16).
 - **Formatos são contratos.** `marga.bundle/v1`, `marga.response/v1` e `marga.project/v1` são lidos por outros agentes e por workspaces já existentes. Acrescentar chaves opcionais é seguro; renomear, remover ou mudar o sentido de uma chave exige subir a versão do schema e continuar lendo o formato antigo. `import_response` aceita apelidos (`comentarios`, `note`, `replacement`, `summary`): preserve-os. Ao mudar o pacote, atualize `RULES` e `AGENT_GUIDE` em `export.py`, os testes e o README.
 - **LaTeX:** `latexmk` com `-interaction=nonstopmode -file-line-error -synctex=1`, timeout de 600 s (projetos do Overleaf com muitas figuras levam minutos) e um outdir por documento e versão (`.marga/build/<doc>/v<n>/out`). Nunca acrescente `-shell-escape`: os documentos são entrada não confiável.
@@ -231,13 +235,16 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 |---|---|
 | `tests/test_textmap.py` | offsets ↔ linha/coluna com Unicode, normalização de LaTeX, busca de frase exata e aproximada, linhas de diff |
 | `tests/test_versions_anchors.py` | versões, arquivos latin-1, re-ancoragem (inalterado, deslocado, alterado, movido, órfão), links |
-| `tests/test_export.py` | pacote da rodada, exportação bloqueada com disco alterado, importação da resposta, resposta inválida |
+| `tests/test_export.py` | pacote da rodada, onde editar (caminhos completos no pacote e no prompt), exportação bloqueada com disco alterado, importação da resposta, resposta inválida |
 | `tests/test_latex_pdf.py` | compilação paralela, erro apontando a linha do subarquivo, versão antiga via snapshot, ida e volta do SyncTeX, texto de PDF avulso |
-| `tests/test_zip_import.py` | `.zip` no formato do Overleaf (subpastas, figura, `.bib`, lixo do macOS), caminhos inseguros, nome digitado no envio, caminho colado do terminal, compilação com figuras e seções, figuras por hard link em versões antigas |
+| `tests/test_figures.py` | caixas do SyncTeX trocadas pela área real das imagens, recorte das marcas à página, clique dentro de uma imagem → linha do `\includegraphics` |
+| `tests/test_zip_import.py` | `.zip` no formato do Overleaf (subpastas, figura, `.bib`, lixo do macOS), caminhos inseguros, nome digitado no envio, caminho colado do terminal, `.zip` novo como próxima versão (e as recusas), `.gitignore` de `.marga/` e `uploads/` (com `git status` de verdade), compilação com figuras e seções, figuras por hard link em versões antigas |
+| `tests/test_folders.py` | workspaces recentes (ordem, limite, pastas apagadas, arquivo corrompido) e o seletor de pastas de cada sistema, inclusive cancelar |
 | `tests/test_outline.py` | títulos pela tipografia (folha de rosto, sumário e notas ficam de fora), marcadores, seções do fonte (`\include` comentado, `\section*`, apêndice) e páginas de cada seção |
-| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte |
+| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente |
 
 - As fixtures `demo_ws` e `text_ws` (em `tests/conftest.py`) criam workspaces em `tmp_path`. Testes novos nunca devem escrever em `examples/demo/`.
+- A fixture automática `isolated_config` aponta `MARGA_CONFIG_DIR` para `tmp_path`: nenhum teste mexe nos workspaces recentes reais.
 - Sem `latexmk`/`synctex`, os testes de compilação e SyncTeX são pulados.
 - Testes opcionais com arquivos reais: `MARGA_ZIP=/caminho/projeto.zip uv run pytest tests/test_zip_import.py -k real -s` e `MARGA_PDF=/caminho/doc.pdf uv run pytest tests/test_outline.py -k real -s`.
 - Mudou a interface? Além do smoke test, suba o servidor (tutorial acima) e repita o fluxo do Passo 4 numa cópia do demo.
@@ -280,6 +287,7 @@ feat/<nome> ou fix/<nome>  →  dev  →  main
 | "Nada mudou no disco desde a vN" | `register_version` foi chamado sem mudanças; é o comportamento esperado. |
 | A mudança no JS/CSS não aparece | Os arquivos do frontend são lidos na importação. Reinicie o servidor. |
 | `ModuleNotFoundError: No module named 'streamlit.components.v2'` | Streamlit antigo, fora do lock. Rode `uv sync` e use `uv run`. |
+| **📁 Finder** não abre nada | O seletor abre no computador do servidor, às vezes atrás da janela do navegador. No Linux, ele precisa do `zenity` ou do `kdialog`; sem os dois, o botão não aparece. |
 | Windows | O código usa chamadas POSIX (`os.killpg`). Use macOS, Linux ou WSL. |
 
 ## Aplicando uma rodada de revisão
@@ -287,7 +295,7 @@ feat/<nome> ou fix/<nome>  →  dev  →  main
 Se pediram para você aplicar uma revisão feita no Marga (e não para mexer no código do Marga):
 
 1. Leia `.marga/rounds/NNN/bundle.md` no workspace indicado (ou `.marga/rounds/latest.md`). O `bundle.json` tem os mesmos dados, estruturados.
-2. Edite os arquivos no lugar, mudando só o necessário. Os números de linha valem para o que está no disco; se as linhas mudarem enquanto você edita, ache o trecho pela citação exata.
+2. Edite os arquivos direto no disco, nos caminhos da seção *Onde editar* do pacote, mudando só o necessário. Num projeto importado de `.zip`, edite a cópia em `uploads/<nome>/`: não gere `.zip` nem aplique as mudanças em outra cópia (Overleaf, Downloads), porque o Marga só enxerga o disco. Os números de linha valem para o que está no disco; se as linhas mudarem enquanto você edita, ache o trecho pela citação exata.
 3. Respeite os tipos: `pergunta` se responde na nota, sem editar; `nao_alterar` protege o trecho; `nota` é só contexto. Siga também as relações dos links.
 4. Mantenha o LaTeX compilável e aplique as sugestões literalmente.
 5. Escreva `.marga/rounds/NNN/response.json` no formato da seção *Resposta* do pacote.

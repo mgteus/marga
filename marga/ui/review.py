@@ -86,6 +86,11 @@ def _page_size(path: str, mtime: float, page: int) -> tuple[float, float]:
     return pdfmod.page_size(path, page)
 
 
+@st.cache_data(max_entries=512, show_spinner=False)
+def _page_images(path: str, mtime: float, page: int) -> list[tuple[float, float, float, float]]:
+    return pdfmod.image_rects(path, page)
+
+
 @st.cache_data(max_entries=128, show_spinner="Lendo as seções do PDF…")
 def _pdf_outline(root: str, sha: str) -> dict:
     return outline.for_pdf(Workspace(root), sha).to_dict()
@@ -475,7 +480,7 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
         _section_picker(nav[4], v, secs, found.source_label, key_page, page)
 
     width, height = _page_size(str(pdf_path), mtime, page)
-    rects = _pdf_rects(ws, v, pdf_path, result, page)
+    rects = _pdf_rects(ws, v, pdf_path, result, page, width, height)
     img_key = f"{pdf_path}:{mtime}:{page}:{ZOOM}"
     data = {"img": _page_png(str(pdf_path), mtime, page, ZOOM), "img_key": img_key, "w": width, "h": height,
             "rects": rects, "rev": _rev([rects, img_key])}
@@ -541,11 +546,12 @@ def _anchor_boxes(ws: Workspace, v: View, pdf_path: Path, result, anchor: Anchor
     if result is None or not synctex.available():
         return []
     src = Path(result.src_dir) / os.path.relpath(anchor.file, v.doc.root)
-    region = []
+    boxes = []
     for line in range(anchor.start_line, min(anchor.end_line, anchor.start_line + 30) + 1):
-        region += [b.rect for b in synctex.forward(pdf_path, src, line, result.src_dir) if b.page == page]
-    if not region:
+        boxes += [b for b in synctex.forward(pdf_path, src, line, result.src_dir) if b.page == page]
+    if not boxes:
         return []
+    region = synctex.fit_images(boxes, _page_images(str(pdf_path), pdf_path.stat().st_mtime, page))
     plain = latex_to_plain(anchor.quote)
     if 3 <= len(plain) <= 300:
         top, bottom = min(b[1] for b in region) - 4, max(b[3] for b in region) + 4
@@ -555,7 +561,9 @@ def _anchor_boxes(ws: Workspace, v: View, pdf_path: Path, result, anchor: Anchor
     return _merge(region)
 
 
-def _pdf_rects(ws: Workspace, v: View, pdf_path: Path, result, page: int) -> list[dict]:
+def _pdf_rects(ws: Workspace, v: View, pdf_path: Path, result, page: int, width: float,
+               height: float) -> list[dict]:
+    """Marcas da página: anotações e seleção, sempre recortadas à página."""
     focus_ann = st.session_state.get("focus_ann")
     items: list[tuple[str, str, Anchor]] = []
     for a in ws.annotations(v.doc.id):
@@ -567,7 +575,9 @@ def _pdf_rects(ws: Workspace, v: View, pdf_path: Path, result, page: int) -> lis
         items.append(("", "sel", sel[0]))
     out = []
     for ident, kind, anchor in items:
-        for i, box in enumerate(_anchor_boxes(ws, v, pdf_path, result, anchor, page)):
+        boxes = [b for b in (pdfmod.clip_rect(box, width, height)
+                             for box in _anchor_boxes(ws, v, pdf_path, result, anchor, page)) if b]
+        for i, box in enumerate(boxes):
             out.append({"x0": box[0], "y0": box[1], "x1": box[2], "y1": box[3], "id": ident,
                         "kind": kind + (" mg-focus" if ident and ident == focus_ann else ""),
                         "label": ident if i == 0 else ""})
@@ -575,15 +585,17 @@ def _pdf_rects(ws: Workspace, v: View, pdf_path: Path, result, page: int) -> lis
 
 
 def _hit_to_file(v: View, result, hits: list[tuple[Path, int]]) -> tuple[str, int] | None:
+    """Primeiro acerto num arquivo da versão, de preferência com linha (dentro de imagens o SyncTeX dá 0)."""
     src_dir = os.path.normpath(result.src_dir)
+    found = []
     for path, line in hits:
         rel = os.path.relpath(path, src_dir)
         if rel.startswith(".."):
             continue
         ws_rel = Path(os.path.normpath(Path(v.doc.root) / rel)).as_posix()
         if ws_rel in v.version.files:
-            return ws_rel, line
-    return None
+            found.append((ws_rel, line))
+    return next((f for f in found if f[1] > 0), found[0] if found else None)
 
 
 def _pdf_pick(ws: Workspace, v: View, pdf_path: Path, result, page: int, point, rect) -> None:
@@ -607,6 +619,11 @@ def _pdf_pick(ws: Workspace, v: View, pdf_path: Path, result, page: int, point, 
         hits = []
         for px, py in probes:
             target = _hit_to_file(v, result, synctex.inverse(pdf_path, page, px, py, cwd=result.src_dir))
+            if target and target[1] <= 0:  # ponto dentro de uma imagem: vale o \includegraphics dela
+                src = Path(result.src_dir) / os.path.relpath(target[0], doc.root)
+                line = synctex.figure_at(pdf_path, page, px, py, src,
+                                         version_text(ws, doc, v.version, target[0]), result.src_dir)
+                target = (target[0], line) if line else None
             if target:
                 hits.append(target)
         file = hits[0][0] if hits else None

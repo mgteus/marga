@@ -7,7 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, latex
+from marga.core import actions, folders, latex
 from marga.core.pdf import page_count
 from marga.core.versions import blob_path, doc_status, latest_version
 from marga.core.workspace import MARGA_DIR, MargaError, Workspace
@@ -26,6 +26,7 @@ def render(default_path: str) -> Workspace | None:
         st.markdown("## 🖍️ marga")
         st.caption("Comente, ligue trechos entre arquivos, exporte para o agente e compare n × n+1.")
         st.text_input("Workspace (pasta)", key="ws_path")
+        _workspace_shortcuts()
         root = Path(ss["ws_path"]).expanduser()
         if not root.is_dir():
             st.error(f"Pasta não encontrada: {root}")
@@ -40,6 +41,7 @@ def render(default_path: str) -> Workspace | None:
         except MargaError as exc:
             st.error(str(exc))
             return None
+        folders.remember_workspace(ws.root)
         tools = latex.tools()
         st.caption(" · ".join(f"{'✅' if tools[t] else '❌'} {t}" for t in ("latexmk", "synctex")))
         st.divider()
@@ -47,6 +49,44 @@ def render(default_path: str) -> Workspace | None:
         _add_document(ws)
         _settings(ws)
     return ws
+
+
+def _workspace_shortcuts() -> None:
+    """Botão que abre o Finder e lista dos workspaces recentes, para não precisar digitar o caminho."""
+    ss = st.session_state
+    current = Path(ss["ws_path"]).expanduser().resolve()
+    recent = [str(p) for p in folders.recent_workspaces() if p != current]
+    pick = folders.can_pick()
+    if not (pick or recent):
+        return
+    cols = st.columns([1, 1.6]) if pick and recent else [st.container()]
+    if pick:
+        cols[0].button("📁 Finder" if recent else "📁 Escolher pasta…", key="ws_pick", on_click=_pick_workspace,
+                       width="stretch", help="Abre o seletor de pastas do sistema para escolher o workspace.")
+    if recent:
+        home = str(Path.home())
+        cols[-1].selectbox("Recentes", recent, index=None, key="ws_recent", placeholder="🕘 Recentes",
+                           label_visibility="collapsed", on_change=_use_recent,
+                           format_func=lambda p: f"{Path(p).name} · {short(str(Path(p).parent).replace(home, '~'), 28)}")
+
+
+def _pick_workspace() -> None:
+    ss = st.session_state
+    current = Path(ss.get("ws_path") or ".").expanduser()
+    try:
+        chosen = folders.pick_folder(current.parent if current.is_dir() else None)
+    except MargaError as exc:
+        state.flash("err", str(exc))
+        return
+    if chosen:
+        ss["ws_path"] = str(chosen).rstrip("/") or "/"
+
+
+def _use_recent() -> None:
+    ss = st.session_state
+    if ss.get("ws_recent"):
+        ss["ws_path"] = ss["ws_recent"]
+    ss["ws_recent"] = None
 
 
 @st.fragment(run_every=4)
@@ -107,13 +147,50 @@ def _add_document(ws: Workspace) -> None:
             _add_from_disk(ws)
 
 
+def _zip_target(ws: Workspace, filename: str, key: str) -> str | None:
+    """Para um .zip: documento novo (None) ou a próxima versão de um documento enviado antes."""
+    targets = actions.zip_targets(ws) if filename.lower().endswith(".zip") else []
+    if not targets:
+        return None
+    labels = {"": "Documento novo", **{d.id: f"Nova versão de {d.label}" for d in targets}}
+    return st.selectbox("Adicionar como", list(labels), key=key, format_func=labels.get) or None
+
+
+def _update_from_zip(ws: Workspace, doc_id: str, source, filename: str, size: int, key: str) -> bool:
+    """Botão que registra o .zip como a próxima versão; devolve True se registrou."""
+    doc = ws.get_doc(doc_id)
+    latest = latest_version(ws, doc_id)
+    nxt = latest.n + 1 if latest else 1
+    st.caption(f"Os arquivos do .zip substituem a cópia em {doc.root}/. Textos que não vierem nele saem da cópia; "
+               f"a v{nxt - 1} continua guardada no Marga.")
+    if not st.button(f"Registrar como v{nxt} de {doc.id}" + (f" · {_size(size)}" if size else ""), type="primary",
+                     key=key, width="stretch"):
+        return False
+    with st.spinner(f"Registrando {filename} como v{nxt} de {doc.label}…"):
+        try:
+            update = actions.update_from_zip(ws, doc_id, source, filename)
+        except MargaError as exc:
+            st.error(str(exc))
+            return False
+    state.request("L_doc", doc_id)
+    state.flash("ok", update.summary())
+    return True
+
+
 def _add_upload(ws: Workspace) -> None:
     ss = st.session_state
     n = ss.setdefault("add_up_n", 0)  # trocar a chave limpa o campo de envio depois de adicionar
     upload = st.file_uploader("Arquivo", type=UPLOAD_TYPES, key=f"add_upload_{n}", label_visibility="collapsed")
     if upload is None:
         st.caption("📦 Um .zip baixado do Overleaf vira um documento LaTeX com todos os .tex, a bibliografia "
-                   "e as figuras. Também aceita .pdf, .tex, .md e .txt.")
+                   "e as figuras, ou a próxima versão de um documento enviado antes. Também aceita .pdf, .tex, "
+                   ".md e .txt.")
+        return
+    target = _zip_target(ws, upload.name, f"add_up_as_{n}")
+    if target:
+        if _update_from_zip(ws, target, upload, upload.name, upload.size, f"add_up_ver_{n}"):
+            ss["add_up_n"] = n + 1
+            st.rerun()
         return
     name = st.text_input("Nome no Marga (opcional)", key=f"add_up_name_{n}", placeholder=upload.name)
     if st.button(f"Adicionar {short(upload.name, 34)} · {_size(upload.size)}", type="primary",
@@ -148,6 +225,15 @@ def _add_found(ws: Workspace) -> None:
 
 def _add_from_disk(ws: Workspace) -> None:
     raw = st.text_input("Caminho do arquivo", key="add_disk_path", placeholder="~/Downloads/projeto-overleaf.zip")
+    path = actions.parse_path(ws, raw) if raw.strip() else None
+    target = _zip_target(ws, path.name, "add_disk_as") if path else None
+    if target:
+        if not path.is_file():
+            st.caption(f"Não encontrei {path}.")
+        elif _update_from_zip(ws, target, path, path.name, path.stat().st_size, "add_disk_ver"):
+            state.request("add_disk_path", "")
+            st.rerun()
+        return
     name = st.text_input("Nome no Marga (opcional)", key="add_disk_name")
     st.caption("Para arquivos grandes: o Marga lê direto do disco. Um .zip é extraído em uploads/; "
                ".pdf, .tex, .md e .txt de fora do workspace são copiados para lá.")

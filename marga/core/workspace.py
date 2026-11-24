@@ -13,6 +13,7 @@ from typing import Any
 from .models import Annotation, Document, Link, now_iso
 
 MARGA_DIR = ".marga"
+UPLOADS_DIR = "uploads"
 PROJECT_SCHEMA = "marga.project/v1"
 
 _LOCK = threading.RLock()
@@ -67,6 +68,25 @@ def write_bytes(path: Path, data: bytes) -> None:
     _atomic_write(path, data)
 
 
+# Quando o workspace também é um repositório git, o estado do Marga e as cópias dos documentos ficam fora dele.
+MARGA_GITIGNORE = "# Criado pelo Marga: o git do workspace ignora o estado do Marga.\n*\n"
+UPLOADS_GITIGNORE = (
+    "# Criado pelo Marga: as cópias dos documentos enviados ficam fora do git do workspace.\n"
+    "# Para versioná-las, deixe este arquivo vazio: o Marga só o cria quando ele não existe.\n*\n"
+)
+
+
+def ensure_gitignore(folder: Path, text: str) -> None:
+    """Cria ``folder/.gitignore`` se ele não existir; um arquivo que já existe (mesmo vazio) fica como está."""
+    path = folder / ".gitignore"
+    if path.exists():
+        return
+    try:
+        write_text(path, text)
+    except OSError:
+        pass  # pasta só de leitura: o workspace funciona do mesmo jeito
+
+
 def _doc_letters(n: int) -> str:
     """1 -> A, 26 -> Z, 27 -> AA."""
     out = ""
@@ -92,7 +112,20 @@ class Workspace:
                 raise MargaError(f"{ws.root} ainda não é um workspace do Marga.")
             ws.dir.mkdir()
             write_json(ws.project_path, ws._empty_project())
+        ensure_gitignore(ws.dir, MARGA_GITIGNORE)
+        if ws.uploads.is_dir():
+            ensure_gitignore(ws.uploads, UPLOADS_GITIGNORE)
         return ws
+
+    @property
+    def uploads(self) -> Path:
+        return self.root / UPLOADS_DIR
+
+    def ensure_uploads(self) -> Path:
+        """Cria ``uploads/`` (com o ``.gitignore``) e devolve o caminho."""
+        self.uploads.mkdir(exist_ok=True)
+        ensure_gitignore(self.uploads, UPLOADS_GITIGNORE)
+        return self.uploads
 
     @property
     def project_path(self) -> Path:

@@ -1,11 +1,14 @@
 """Smoke test do app Streamlit (renderiza todas as abas sem exceções)."""
 
+import zipfile
 from pathlib import Path
 
 import pymupdf
 from streamlit.testing.v1 import AppTest
 
-from marga.core import actions, export
+from marga.core import actions, export, folders
+from marga.core.versions import load_versions
+from marga.core.workspace import Workspace
 
 APP = str(Path(__file__).resolve().parents[1] / "marga" / "app.py")
 
@@ -52,6 +55,44 @@ def test_sections_navigate_pdf_and_filter_its_text(demo_ws, monkeypatch):
     assert trecho.options[0].startswith("Documento inteiro")
     trecho.select("s1").run()  # Capítulo 1: páginas 2–4 (a Parte II começa no meio da página 4)
     assert not at.exception, at.exception
+
+
+def _project_zip(path: Path, intro: str) -> Path:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("main.tex", "\\documentclass{article}\n\\begin{document}\n\\input{intro}\n\\end{document}\n")
+        zf.writestr("intro.tex", intro)
+    return path
+
+
+def test_sidebar_registers_a_zip_from_disk_as_the_next_version(demo_ws, monkeypatch, tmp_path):
+    doc = actions.import_zip(demo_ws, _project_zip(tmp_path / "proj.zip", "Versão um.\n"), "proj.zip")
+    newer = _project_zip(tmp_path / "proj (2).zip", "Versão dois.\n")
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["add_from"] = "disco"
+    at.run()
+    at.text_input(key="add_disk_path").input(str(newer)).run()
+    at.selectbox(key="add_disk_as").select(doc.id).run()
+    assert at.button(key="add_disk_ver").label == f"Registrar como v2 de {doc.id} · 1 KB"
+    at.button(key="add_disk_ver").click().run()
+    assert not at.exception, at.exception
+    assert [v.n for v in load_versions(demo_ws, doc.id)] == [1, 2] and len(demo_ws.docs()) == 1
+    assert (demo_ws.abspath(doc.root) / "intro.tex").read_text(encoding="utf-8") == "Versão dois.\n"
+
+
+def test_sidebar_switches_to_a_recent_workspace(demo_ws, monkeypatch, tmp_path):
+    other = tmp_path / "outro"
+    other.mkdir()
+    folders.remember_workspace(Workspace.open(other).root)
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+    recent = at.selectbox(key="ws_recent")
+    assert len(recent.options) == 1 and recent.options[0].startswith("outro · ")  # o workspace atual fica de fora
+    recent.select(str(other.resolve())).run()
+    assert not at.exception, at.exception
+    assert at.session_state["ws_path"] == str(other.resolve())
+    assert folders.recent_workspaces()[0] == other.resolve()
 
 
 def test_latex_source_jumps_to_a_section(demo_ws, monkeypatch):

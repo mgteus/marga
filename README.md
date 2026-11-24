@@ -32,9 +32,9 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | 🔄 **Versões e re-ancoragem** | Snapshots imutáveis por sha256. Na versão nova, cada comentário fica *inalterado*, *alterado*, *movido* ou *órfão*. |
 | ⚡ **Compilação paralela** | `latexmk` compila os documentos visíveis ao mesmo tempo; um erro de compilação vira comentário com um clique. |
 | 📕 **PDFs avulsos** | PDFs sem fonte também são revisáveis, a partir do texto extraído de cada página. |
-| 📦 **Projetos do Overleaf** | O `.zip` baixado do Overleaf vira um documento LaTeX completo: vários `.tex`, figuras e bibliografia. |
+| 📦 **Projetos do Overleaf** | O `.zip` baixado do Overleaf vira um documento LaTeX completo: vários `.tex`, figuras e bibliografia. Um `.zip` novo do mesmo projeto vira a próxima versão do documento. |
 | 🧭 **Seções** | Em PDFs grandes, uma lista de seções leva direto a cada capítulo e filtra o texto. Ela vem do fonte LaTeX, dos marcadores do PDF ou de títulos detectados pela tipografia. |
-| 🔒 **Local e não destrutivo** | Quem edita é o agente. O Marga só escreve em `.marga/` (e em `uploads/`, quando você envia um arquivo). |
+| 🔒 **Local e não destrutivo** | Quem edita é o agente. O Marga só escreve em `.marga/` e em `uploads/`, onde guarda as cópias dos arquivos enviados; seus arquivos de fora de `uploads/` nunca são sobrescritos. |
 
 ## 🚀 Começo rápido
 
@@ -109,7 +109,7 @@ flowchart LR
     C --> R
 ```
 
-1. **Adicione documentos** na barra lateral, em **➕ Adicionar documento**. Cada documento ganha uma letra (A, B, C…) e a v1, e o nome digitado vira o nome do documento.
+1. **Adicione documentos** na barra lateral, em **➕ Adicionar documento**. Cada documento ganha uma letra (A, B, C…) e a v1, e o nome digitado vira o nome do documento. Para trocar de workspace, digite o caminho no topo da barra lateral, abra o seletor do sistema em **📁 Finder** ou volte a um dos **🕘 Recentes**.
 
    | Origem | O que aceita |
    |---|---|
@@ -123,11 +123,11 @@ flowchart LR
    - As seções vêm do fonte LaTeX (posicionado pelo SyncTeX), dos marcadores do PDF ou, em PDFs sem marcadores, de títulos detectados pela tipografia.
 3. **Selecione e comente.**
    - Fonte: arraste para selecionar, ou clique/arraste nos números de linha (shift estende).
-   - PDF: o clique leva à linha do fonte; arrastar um retângulo seleciona o trecho (SyncTeX + texto do PDF).
+   - PDF: o clique leva à linha do fonte; arrastar um retângulo seleciona o trecho (SyncTeX + texto do PDF). Dentro de uma figura, a seleção vai para o `\includegraphics` dela, e as marcas ficam sempre dentro da página.
    - Se quiser, sugira o texto substituto: ele vira um diff no pacote, como as *suggestions* do GitHub.
 4. **Ligue trechos entre arquivos** em **↔ Linkar trechos**: origem → relação → destino. Uma seleção usada num link vira uma marca (`mN`), e a aba *Links* mostra o grafo.
 5. **Exporte a rodada** na aba *Rodadas*. O Marga grava `.marga/rounds/NNN/` e mostra um prompt curto para colar no agente.
-6. **O agente edita os arquivos** no lugar e escreve `.marga/rounds/NNN/response.json`, com uma nota por comentário.
+6. **O agente edita os arquivos** direto no disco, nos caminhos da seção *Onde editar* do pacote, e escreve `.marga/rounds/NNN/response.json`, com uma nota por comentário. Num projeto do Overleaf, isso é a cópia em `uploads/`; se a revisão foi aplicada no próprio Overleaf, traga o `.zip` novo como nova versão (veja abaixo).
 7. **Registre a nova versão.** A barra lateral avisa quando os arquivos mudam no disco (**Registrar vN+1**). Os comentários abertos são reposicionados e as notas do agente entram no histórico.
 8. **Compare** na aba *Comparar versões*: antes × depois de cada comentário, nota do agente e diff por arquivo. Resolva, descarte ou reabra com uma nova instrução, e exporte a próxima rodada.
 
@@ -138,6 +138,7 @@ flowchart LR
 2. No Marga, envie o `.zip` em **Enviar** ou cole o caminho dele em **Disco**. O projeto é extraído em `uploads/<nome do zip>/`, sem o lixo do macOS, e vira um documento LaTeX. O principal é o `main.tex` (ou outro `.tex` com `\documentclass`).
 3. O motor padrão é o pdflatex. O Marga usa xelatex quando o projeto carrega `fontspec`/`polyglossia` ou tem `% !TEX program`. Se no Overleaf o projeto usa outro compilador, troque o **Motor** em **⚙️ Ajustes de documento**.
 4. Se faltar um pacote no TeX Live local, o log mostra o arquivo e o comando para descobrir qual pacote instalar (`tlmgr search --global --file /arquivo.sty`). Projetos com biblatex precisam do `biber`.
+5. **Revisão aplicada no Overleaf?** Baixe o projeto de novo e, em **Enviar** ou **Disco**, escolha **Adicionar como → Nova versão de A**. Os arquivos do `.zip` substituem a cópia em `uploads/`, e os textos que não vierem nele saem da cópia. Figuras que sumiram ficam, para as versões antigas continuarem compilando, e a v anterior continua guardada. A versão nova responde à rodada pendente, como quando o agente edita o disco.
 
 A primeira compilação de um projeto com muitas figuras leva alguns minutos. Uma dissertação com cerca de 350 MB de imagens levou cerca de 100 s, e o limite é de 10 minutos. O `marga` aceita envios de até 2 GB e as versões antigas reaproveitam as figuras por hard link, sem copiá-las.
 
@@ -172,7 +173,7 @@ Cada rodada fica em `.marga/rounds/NNN/`, e a mais recente também em `.marga/ro
 
 | Arquivo | Para quem | Conteúdo |
 |---|---|---|
-| `bundle.md` | Agente | O prompt: regras, comentários por arquivo com trecho numerado e citação exata, sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
+| `bundle.md` | Agente | O prompt: onde editar (o caminho completo de cada documento), regras, comentários por arquivo com trecho numerado e citação exata, sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
 | `bundle.json` | Agente / scripts | Os mesmos dados estruturados (schema `marga.bundle/v1`), incluindo o diff desde a versão anterior |
 | `bundle.html` | Você | Relatório para leitura humana, autocontido |
 | `response.json` | Escrito pelo agente | Uma nota por comentário (schema `marga.response/v1`) |
@@ -180,9 +181,14 @@ Cada rodada fica em `.marga/rounds/NNN/`, e a mais recente também em `.marga/ro
 O prompt que o Marga mostra é parecido com:
 
 ```text
-Estou revisando os documentos do workspace /caminho/da/pasta com o Marga. Leia .marga/rounds/001/bundle.md
-e aplique os comentários editando os arquivos no lugar, seguindo as regras do pacote. Ao terminar, escreva
-.marga/rounds/001/response.json no formato descrito na seção Resposta do pacote.
+Estou revisando os documentos do workspace /caminho/da/pasta com o Marga. Leia .marga/rounds/001/bundle.md e
+aplique os comentários seguindo as regras do pacote.
+Edite os arquivos direto no disco, nestes caminhos:
+- A · artigo: /caminho/da/pasta/artigo
+- B · Tese: /caminho/da/pasta/uploads/Tese
+O Marga só enxerga mudanças nesses caminhos: não gere .zip, não edite outra cópia do projeto (Overleaf,
+Downloads, um clone) e não renomeie arquivos.
+Ao terminar, escreva .marga/rounds/001/response.json no formato descrito na seção Resposta do pacote.
 ```
 
 E a resposta do agente:
@@ -207,6 +213,7 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 
 ```text
 .marga/
+├── .gitignore                   "*": o git do workspace ignora o estado do Marga
 ├── marga.json                   documentos, contadores e ajustes
 ├── objects/                     conteúdo de cada versão, endereçado por sha256
 ├── docs/A/versions.json         versões de cada documento
@@ -220,6 +227,8 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 ```
 
 Apague `.marga/` para recomeçar do zero. Seus arquivos continuam onde estão.
+
+O `uploads/` também ganha um `.gitignore` com `*`, para as cópias dos documentos enviados não entrarem no git do workspace. Ele só é criado quando não existe; para versionar as cópias, deixe o arquivo vazio. Fora do workspace, o Marga só guarda a lista de workspaces recentes, em `~/Library/Application Support/marga/recentes.json` no macOS ou em `~/.config/marga/` no Linux.
 
 </details>
 
@@ -258,5 +267,7 @@ O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`]
 - A detecção de títulos em PDFs sem marcadores é uma heurística. Ela funciona bem com títulos numerados em negrito ou maiores que o texto (o padrão do LaTeX), mas pode errar em layouts incomuns.
 - Só se comenta na versão mais recente, e só quando o disco bate com ela (registre a nova versão antes).
 - Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados.
+- No PDF, a marca de uma imagem (PNG, JPG) cobre a imagem exata. Já a de uma figura vetorial (um PDF incluído com `\includegraphics`) é a caixa do SyncTeX recortada à página, que pode ser maior que a figura.
+- O **📁 Finder** abre o seletor de pastas no computador onde o servidor roda. No Linux, ele precisa do `zenity` ou do `kdialog`.
 - Não há editor de texto no app nem chamada direta a uma API de LLM: o pacote é feito para um agente com acesso à pasta.
 - Testado no macOS. Linux deve funcionar; no Windows, prefira o WSL (o código usa chamadas POSIX, como `os.killpg`).

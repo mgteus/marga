@@ -94,6 +94,22 @@ def search_rects(path: str | Path, page: int, text: str) -> list[tuple[float, fl
         return [tuple(r) for r in doc[page - 1].search_for(text)]
 
 
+def image_rects(path: str | Path, page: int) -> list[tuple[float, float, float, float]]:
+    """Área de cada imagem desenhada na página (PNG, JPG…), já recortada à página."""
+    with _open(path) as doc:
+        pg = doc[page - 1]
+        rects = (pymupdf.Rect(info["bbox"]) & pg.rect for info in pg.get_image_info())
+        return list(dict.fromkeys(tuple(r) for r in rects if not r.is_empty))
+
+
+def clip_rect(rect: tuple[float, float, float, float], width: float,
+              height: float) -> tuple[float, float, float, float] | None:
+    """Recorta o retângulo à página; ``None`` se nada dele cai dentro dela."""
+    x0, y0 = max(0.0, rect[0]), max(0.0, rect[1])
+    x1, y1 = min(width, rect[2]), min(height, rect[3])
+    return (x0, y0, x1, y1) if x1 > x0 and y1 > y0 else None
+
+
 # ------------------------------------------------------------- PDF avulso
 @dataclass
 class PdfText:
