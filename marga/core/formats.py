@@ -20,9 +20,7 @@ XML tem um limite de tamanho descompactada.
 
 from __future__ import annotations
 
-import io
 import json
-import posixpath
 import re
 import zipfile
 from collections.abc import Iterator
@@ -31,12 +29,12 @@ from html.parser import HTMLParser
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+from . import ooxml
 from .versions import decode_text
 from .workspace import MargaError
 
 FORMATS: dict[str, str] = {".docx": "docx", ".pptx": "pptx", ".html": "html", ".htm": "html"}
 LABELS: dict[str, str] = {"docx": "Word (.docx)", "pptx": "PowerPoint (.pptx)", "html": "HTML"}
-MAX_PART_BYTES = 64_000_000  # XML descompactado de uma parte do .docx/.pptx
 SLIDE_MARKER = "=== slide {n}{hidden} ==="
 NOTES_LABEL = "Notas do apresentador:"
 
@@ -114,63 +112,16 @@ class _Lines:
 
 
 # ------------------------------------------------------------- .zip + XML
-_PKG_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
-_MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
-
-
-def _open_zip(data: bytes, label: str) -> zipfile.ZipFile:
-    try:
-        return zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile as exc:
-        raise MargaError(f"não consegui abrir o arquivo como {label}: ele está corrompido, protegido por senha "
-                         "ou no formato antigo (.doc, .ppt). Salve-o de novo como .docx ou .pptx.") from exc
-
-
-def _xml(zf: zipfile.ZipFile, name: str, required: bool = True) -> ET.Element | None:
-    try:
-        info = zf.getinfo(name)
-    except KeyError:
-        if required:
-            raise MargaError(f"falta a parte {name}: o arquivo não parece um documento do Office.") from None
-        return None
-    if info.file_size > MAX_PART_BYTES:
-        raise MargaError(f"a parte {name} tem {info.file_size // 1_000_000} MB descompactada, grande demais para ler.")
-    try:
-        return ET.fromstring(zf.read(info))
-    except Exception as exc:  # noqa: BLE001 - qualquer falha de um arquivo não confiável vira erro legível
-        raise MargaError(f"não consegui ler {name}: {exc}") from exc
-
-
-def _rels(zf: zipfile.ZipFile, part: str) -> dict[str, tuple[str, str]]:
-    """Relações de uma parte do pacote: id → (tipo, caminho da parte de destino dentro do .zip)."""
-    folder, name = posixpath.split(part)
-    root = _xml(zf, posixpath.join(folder, "_rels", f"{name}.rels"), required=False)
-    out: dict[str, tuple[str, str]] = {}
-    for rel in [] if root is None else root.iter(_PKG_REL):
-        target = rel.get("Target") or ""
-        if not target or rel.get("TargetMode") == "External":
-            continue
-        path = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join(folder, target))
-        out[rel.get("Id", "")] = (rel.get("Type", ""), path)
-    return out
-
-
-def _main_xml(zf: zipfile.ZipFile, default: str, root_tag: str, label: str) -> tuple[str, ET.Element]:
-    """A parte principal do pacote (``word/document.xml``, ``ppt/presentation.xml``…), conferindo o tipo dela."""
-    path = next((p for kind, p in _rels(zf, "").values() if kind.endswith("/officeDocument")), default)
-    root = _xml(zf, path)
-    if root.tag != root_tag:
-        raise MargaError(f"o arquivo não é um {label}: a parte principal é {path}.")
-    return path, root
-
-
-def _related(rels: dict[str, tuple[str, str]], rel_type: str) -> str | None:
-    """Caminho da primeira parte com a relação ``…/rel_type`` (ex.: ``styles``, ``footnotes``, ``notesSlide``)."""
-    return next((path for kind, path in rels.values() if kind.endswith("/" + rel_type)), None)
+_MC = ooxml.MC
+_open_zip = ooxml.open_package
+_xml = ooxml.read_xml
+_rels = ooxml.rels
+_main_xml = ooxml.main_part
+_related = ooxml.related
 
 
 # ------------------------------------------------------------------ Word
-_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_W = ooxml.W
 # Dentro de um parágrafo, o que não é texto visível: propriedades, texto apagado ou movido (revisões, como se
 # fossem aceitas), códigos de campo e a versão alternativa de desenhos (repetiria o texto das caixas de texto).
 _DOCX_SKIP = {_W + "pPr", _W + "rPr", _W + "del", _W + "moveFrom", _W + "delText", _W + "instrText",
@@ -346,15 +297,16 @@ def extract_docx(data: bytes) -> Extracted:
 
 
 # ------------------------------------------------------------ PowerPoint
-_P = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
-_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
-_R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+_P = ooxml.P
+_A = ooxml.A
+_R_ID = ooxml.R_ID
 _TITLES = {"title", "ctrTitle"}
 _BULLETED = {"body", "obj"}  # placeholders de conteúdo: tópicos com marcador, a menos que o parágrafo o tire
 _IGNORED = {"dt", "ftr", "sldNum", "hdr", "sldImg"}  # data, rodapé, número do slide…
 
 
-def _a_text(p: ET.Element) -> str:
+def a_text(p: ET.Element) -> str:
+    """Texto de um parágrafo do DrawingML (``a:p``), como vai para o texto extraído: quebras viram espaço."""
     out = []
     for child in p:
         if child.tag in (_A + "r", _A + "fld"):
@@ -365,23 +317,40 @@ def _a_text(p: ET.Element) -> str:
     return "".join(out).strip()
 
 
-def _placeholder(sp: ET.Element) -> str | None:
-    ph = sp.find(f"{_P}nvSpPr/{_P}nvPr/{_P}ph")
-    return None if ph is None else ph.get("type", "obj")
+_a_text = a_text
 
 
-def _shape_lines(tree: ET.Element | None) -> Iterator[tuple[bool, str]]:
-    """Linhas das formas de um slide, na ordem em que aparecem: (é título?, texto)."""
+def placeholder(sp: ET.Element) -> tuple[str, str | None] | None:
+    """Tipo e índice do placeholder de uma forma (``obj`` quando o tipo não vem), ou ``None``."""
+    nv = sp[0] if len(sp) else None
+    ph = None if nv is None else nv.find(f"{_P}nvPr/{_P}ph")
+    return None if ph is None else (ph.get("type", "obj"), ph.get("idx"))
+
+
+def shape_id(sh: ET.Element) -> str:
+    """Id da forma no slide (``p:cNvPr``): a chave que liga o texto extraído ao leitor de slides."""
+    nv = sh[0] if len(sh) else None
+    c_nv = None if nv is None else nv.find(_P + "cNvPr")
+    return "" if c_nv is None else c_nv.get("id", "")
+
+
+def _shape_lines(tree: ET.Element | None) -> Iterator[tuple[bool, str, str]]:
+    """Linhas das formas de um slide, na ordem em que aparecem: (é título?, texto, chave).
+
+    A chave é ``id:parágrafo`` (``id:rN`` numa linha de tabela), com o índice entre todos os parágrafos da forma.
+    """
     for sh in [] if tree is None else tree:
         if sh.tag in (_MC + "AlternateContent", _MC + "Choice", _P + "grpSp"):
             yield from _shape_lines(sh if sh.tag != _MC + "AlternateContent" else sh.find(_MC + "Choice"))
         elif sh.tag == _P + "sp":
-            kind = _placeholder(sh)
+            ph = placeholder(sh)
+            kind = ph[0] if ph else None
             body = sh.find(_P + "txBody")
             if kind in _IGNORED or body is None:
                 continue
-            for p in body.findall(_A + "p"):
-                text = _a_text(p)
+            sid = shape_id(sh)
+            for i, p in enumerate(body.findall(_A + "p")):
+                text = a_text(p)
                 if not text:
                     continue
                 ppr = p.find(_A + "pPr")
@@ -389,17 +358,18 @@ def _shape_lines(tree: ET.Element | None) -> Iterator[tuple[bool, str]]:
                 bullet = ppr is not None and (ppr.find(_A + "buChar") is not None or ppr.find(_A + "buAutoNum") is not None)
                 no_bullet = ppr is not None and ppr.find(_A + "buNone") is not None
                 if kind in _TITLES:
-                    yield True, text
+                    yield True, text, f"{sid}:{i}"
                 elif bullet or (kind in _BULLETED and not no_bullet):
-                    yield False, "  " * (int(lvl) if lvl.isdigit() else 0) + "- " + text
+                    yield False, "  " * (int(lvl) if lvl.isdigit() else 0) + "- " + text, f"{sid}:{i}"
                 else:
-                    yield False, text
+                    yield False, text, f"{sid}:{i}"
         elif sh.tag == _P + "graphicFrame":
             tbl = sh.find(f".//{_A}tbl")
-            for tr in [] if tbl is None else tbl.findall(_A + "tr"):
-                cells = [" ".join(t for t in map(_a_text, tc.iter(_A + "p")) if t) for tc in tr.findall(_A + "tc")]
+            sid = shape_id(sh)
+            for r, tr in enumerate([] if tbl is None else tbl.findall(_A + "tr")):
+                cells = [" ".join(t for t in map(a_text, tc.iter(_A + "p")) if t) for tc in tr.findall(_A + "tc")]
                 if any(cells):
-                    yield False, "| " + " | ".join(cells) + " |"
+                    yield False, "| " + " | ".join(cells) + " |", f"{sid}:r{r}"
 
 
 def _notes_lines(zf: zipfile.ZipFile, slide_part: str) -> list[str]:
@@ -410,8 +380,9 @@ def _notes_lines(zf: zipfile.ZipFile, slide_part: str) -> list[str]:
     out = []
     for sp in notes.iter(_P + "sp"):
         body = sp.find(_P + "txBody")
-        if _placeholder(sp) == "body" and body is not None:
-            out += [t for t in map(_a_text, body.findall(_A + "p")) if t]
+        ph = placeholder(sp)
+        if ph and ph[0] == "body" and body is not None:
+            out += [t for t in map(a_text, body.findall(_A + "p")) if t]
     return out
 
 
@@ -425,16 +396,16 @@ def extract_pptx(data: bytes) -> Extracted:
             slide = _xml(zf, part)
             page = {"page": n}
             items = list(_shape_lines(slide.find(f"{_P}cSld/{_P}spTree")))
-            title = next((text for is_title, text in items if is_title), "")
+            title = next((text for is_title, text, _ in items if is_title), "")
             marker = SLIDE_MARKER.format(n=n, hidden=" · oculto" if slide.get("show") == "0" else "")
             out.add(marker, page, section=(1, f"Slide {n}" + (f" · {title}" if title else "")))
-            for is_title, text in items:
-                out.add(f"# {text}" if is_title else text, page)
+            for is_title, text, key in items:
+                out.add(f"# {text}" if is_title else text, {"page": n, "key": key})
             notes = _notes_lines(zf, part)
             if notes:
                 out.add(NOTES_LABEL, page)
                 for text in notes:
-                    out.add(text, page)
+                    out.add(text, {"page": n, "note": True})
             out.add("", page)
         return out.result()
 

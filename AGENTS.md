@@ -9,7 +9,7 @@ Este arquivo é para agentes (Claude Code, Codex, Cursor e afins) que vão **des
 
 O Marga é um webapp local em Streamlit para revisar projetos LaTeX, PDFs, Word, PowerPoint, HTML e arquivos de texto: o usuário comenta trechos, exporta uma *rodada* (`bundle.md/json/html`) para um agente, o agente edita os arquivos e o Marga registra a versão n+1, re-ancora os comentários e mostra o diff.
 
-- **Stack:** Python ≥ 3.11 (o ambiente local usa 3.13) · Streamlit 1.67 com componentes v2 · PyMuPDF · TeX Live (`latexmk` + `synctex`), opcional · [uv](https://docs.astral.sh/uv/).
+- **Stack:** Python ≥ 3.11 (o ambiente local usa 3.13) · Streamlit 1.67 com componentes v2 · PyMuPDF · TeX Live (`latexmk` + `synctex`), opcional · LibreOffice (PowerPoint → PDF), opcional · [uv](https://docs.astral.sh/uv/).
 - **Idioma:** interface, pacote para o agente, mensagens de erro, docstrings, comentários e commits em português; identificadores em inglês.
 - **Design aprovado:** [`docs/superpowers/specs/2026-11-22-marga-design.md`](docs/superpowers/specs/2026-11-22-marga-design.md). O mapa abaixo reflete o código atual, que difere da spec em alguns nomes de arquivo.
 - **Branches:** `feat/…` ou `fix/…` → `dev` → `main`; nunca direto na `main`. Detalhes em [Fluxo de branches](#fluxo-de-branches).
@@ -33,7 +33,10 @@ marga/
 │   ├── models.py       dataclasses + JSON; tipos de documento e de comentário, relações de link, status
 │   ├── workspace.py    .marga/, IDs (A, c1, m1, L1), JSON atômico, MargaError
 │   ├── versions.py     blobs sha256, snapshots (com o texto extraído), mudanças no disco (TEXT_EXTS, SKIP_DIRS)
+│   ├── ooxml.py        pacotes do Office (.zip + XML): partes, relações, limites de tamanho
 │   ├── formats.py      Word, PowerPoint e HTML → texto revisável em linhas (só a biblioteca padrão)
+│   ├── slides.py       PowerPoint desenhado em HTML sem conversão (modo Slides), ligado às linhas do texto
+│   ├── office.py       PowerPoint → PDF com o LibreOffice (modo PDF), com cache por versão
 │   ├── textmap.py      offset ↔ (linha, coluna), texto LaTeX normalizado, busca de frase
 │   ├── anchors.py      âncoras a partir de seleções; re-ancoragem n → n+1
 │   ├── diffing.py      diff para as views, diff unificado, estatísticas
@@ -53,7 +56,7 @@ marga/
     ├── render.py       utilitários de apresentação (texto curto, diffs em HTML, grafo)
     ├── state.py        session_state: seleções, foco, toasts, mudanças adiadas de widgets
     ├── components.py   registra os componentes v2 (lê o JS/CSS na importação)
-    └── frontend/       source_view.{js,css} e pdf_view.{js,css}: JS puro, sem npm nem build
+    └── frontend/       source_view, pdf_view e slide_view (.js e .css): JS puro, sem npm nem build
 tests/                  pytest; as fixtures copiam o demo para tmp_path
 examples/demo/          workspace de exemplo: artigo/, suplemento/, parecer.pdf, notas.md, relatorio.docx, apresentacao.pptx, pagina.html
 examples/gerar_demo_office.py  gera relatorio.docx e apresentacao.pptx (python-docx/python-pptx, grupo dev)
@@ -70,11 +73,12 @@ uv --version
 ```
 
 ```bash
-command -v latexmk synctex pdflatex
+command -v latexmk synctex pdflatex soffice
 ```
 
 - **uv é obrigatório.** Se faltar, instale com `curl -LsSf https://astral.sh/uv/install.sh | sh` ou `brew install uv`. O uv baixa um Python ≥ 3.11 se a máquina não tiver.
 - **TeX Live é opcional.** Sem ele, o app funciona, mas não compila (a barra lateral mostra `❌ latexmk` e o botão **▶ Compilar visíveis** fica desabilitado), a seleção no PDF cai para a busca aproximada de texto e 4 testes são pulados. Para instalar: `brew install texlive` no macOS; no Debian/Ubuntu, `sudo apt install latexmk texlive-latex-extra texlive-lang-portuguese` (o demo usa `babel` com `brazilian`).
+- **LibreOffice é opcional.** Sem ele, o modo PDF do PowerPoint explica como instalar (o modo Slides e o texto continuam) e 2 testes são pulados. Para instalar: `brew install --cask libreoffice` no macOS; `sudo apt install libreoffice-impress` no Debian/Ubuntu.
 - **Não instale ferramentas de sistema (uv, TeX Live) sem pedir ao usuário.** Dentro do projeto, use só `uv`.
 
 ### 2. Dependências
@@ -94,7 +98,7 @@ Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, P
 uv run pytest -q
 ```
 
-Esperado: `62 passed, 2 skipped` em cerca de 45 s, com TeX Live (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
+Esperado: `70 passed, 2 skipped` em cerca de 30 s, com TeX Live e LibreOffice (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
 
 ## Tutorial: rodando o servidor pela primeira vez
 
@@ -221,7 +225,7 @@ O `-sTCP:LISTEN` garante que só o servidor seja encerrado, e não um navegador 
 - **Formatos são contratos.** `marga.bundle/v1`, `marga.response/v1` e `marga.project/v1` são lidos por outros agentes e por workspaces já existentes. Acrescentar chaves opcionais é seguro; renomear, remover ou mudar o sentido de uma chave exige subir a versão do schema e continuar lendo o formato antigo. `import_response` aceita apelidos (`comentarios`, `note`, `replacement`, `summary`): preserve-os. Ao mudar o pacote, atualize `RULES` e `AGENT_GUIDE` em `export.py`, os testes e o README. Chaves opcionais já acrescentadas ao `marga.bundle/v1`: `abs_root`, `extracted_text` e `edit_hint` nos documentos; `slide` (PowerPoint) e `file_lines` (HTML) nas anotações.
 - **LaTeX:** `latexmk` com `-interaction=nonstopmode -file-line-error -synctex=1`, timeout de 600 s (projetos do Overleaf com muitas figuras levam minutos) e um outdir por documento e versão (`.marga/build/<doc>/v<n>/out`). Nunca acrescente `-shell-escape`: os documentos são entrada não confiável.
 - **Versionamento:** só extensões de `TEXT_EXTS` (em `versions.py`), até 5 MB por arquivo; as pastas de `SKIP_DIRS` são ignoradas. PDF avulso, Word, PowerPoint e HTML são documentos de um arquivo só, guardado inteiro.
-- **Word, PowerPoint e HTML** (`core/formats.py`): o texto revisado é extraído do arquivo (um parágrafo, item ou linha de tabela por linha; `# ` títulos, `- ` itens, `=== slide N ===`) e guardado como blob na versão (`Version.extracted`). As âncoras, o diff e a re-ancoragem usam esse texto, e o agente edita o próprio arquivo, localizando o trecho pela citação. Mudar a extração muda o texto das próximas versões, não das já registradas: trate a saída como contrato e cubra a mudança em `tests/test_formats.py`. Os `.docx`/`.pptx` são entrada não confiável: só `zipfile` + `ElementTree`, com limite de tamanho por parte (`MAX_PART_BYTES`).
+- **Word, PowerPoint e HTML** (`core/formats.py`): o texto revisado é extraído do arquivo (um parágrafo, item ou linha de tabela por linha; `# ` títulos, `- ` itens, `=== slide N ===`) e guardado como blob na versão (`Version.extracted`). No PowerPoint, cada linha guarda também a chave do parágrafo (`id da forma:parágrafo`, válida dentro do slide), que liga o desenho do modo Slides (`core/slides.py`) ao texto. As âncoras, o diff e a re-ancoragem usam esse texto, e o agente edita o próprio arquivo, localizando o trecho pela citação. Mudar a extração muda o texto das próximas versões, não das já registradas: trate a saída como contrato e cubra a mudança em `tests/test_formats.py`. Os `.docx`/`.pptx` são entrada não confiável: só `zipfile` + `ElementTree`, com limite de tamanho por parte (`MAX_PART_BYTES`).
 - **Streamlit:**
   - Para mudar o valor de um widget por código, use `state.request(key, value)`: ele é aplicado no início da próxima execução por `apply_pending`. Atribuir a `st.session_state[key]` depois que o widget foi desenhado dá erro.
   - Chaves de widgets que precisam sobreviver à troca de aba devem casar com a regex `_KEEP` de `ui/state.py`, porque o Streamlit descarta o estado de widgets que não foram desenhados.
@@ -245,7 +249,8 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 | `tests/test_folders.py` | workspaces recentes (ordem, limite, pastas apagadas, arquivo corrompido) e o seletor de pastas de cada sistema, inclusive cancelar |
 | `tests/test_outline.py` | títulos pela tipografia (folha de rosto, sumário e notas ficam de fora), marcadores, seções do fonte (`\include` comentado, `\section*`, apêndice) e páginas de cada seção |
 | `tests/test_formats.py` | texto de Word (títulos, listas, tabelas, revisões, campos, notas de rodapé, caixas de texto), PowerPoint (ordem da apresentação, grupos, tabelas, notas, slide oculto) e HTML (estrutura e linhas do arquivo); erros legíveis; o agente editando `.docx`/`.pptx` com python-docx/python-pptx e a re-ancoragem (com o slide); links entre todos os tipos no pacote; arquivos de trava `~$` e envios |
-| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente; Word, PowerPoint e HTML lado a lado, com links e "ir para slide" |
+| `tests/test_slides.py` | leitor de slides: cada parágrafo desenhado aponta para a linha certa do texto, fundo, imagens com transparência, formas livres, `grpFill`, tabelas com estilo, gráfico, forma oculta, escape de HTML; chaves de versões antigas; PDF pelo LibreOffice (slides ocultos, cache, erro), pulado sem ele |
+| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente; Word, PowerPoint e HTML lado a lado, com links e "ir para slide"; PowerPoint nos modos Slides e PDF |
 
 - As fixtures `demo_ws` e `text_ws` (em `tests/conftest.py`) criam workspaces em `tmp_path`. Testes novos nunca devem escrever em `examples/demo/`.
 - A fixture automática `isolated_config` aponta `MARGA_CONFIG_DIR` para `tmp_path`: nenhum teste mexe nos workspaces recentes reais.
@@ -285,6 +290,7 @@ feat/<nome> ou fix/<nome>  →  dev  →  main
 | `uv run marga` fica parado pedindo `Email:` | Prompt de primeira execução do Streamlit. Use `--server.headless true` (ou aperte Enter). |
 | A porta já está em uso | Outro servidor ficou rodando. Ache-o com `lsof -ti tcp:8501 -sTCP:LISTEN` ou use outra porta (`--server.port 8502`). |
 | `❌ latexmk` ou `❌ synctex` na barra lateral | TeX Live fora do `PATH` do servidor. Peça ao usuário para instalar e reinicie o servidor. |
+| `❌ LibreOffice` na barra lateral | Sem `soffice` no `PATH` (nem em `/Applications/LibreOffice.app`): o modo PDF do PowerPoint não converte. Peça ao usuário para instalar; o modo Slides funciona sem ele. |
 | O demo não compila e o log cita `babel`/`brazilian` | Falta o pacote de idioma português do TeX Live (`texlive-lang-portuguese` no Debian/Ubuntu). |
 | "Arquivo corrompido: … o Marga não vai sobrescrevê-lo." | JSON inválido em `.marga/`. Corrija ou remova esse arquivo, nunca os documentos do usuário. |
 | Exportar ou comentar é bloqueado com "registre a vN+1" | Arquivos mudaram no disco desde a última versão. Clique em **Registrar vN+1** (ou chame `actions.register_version`). |

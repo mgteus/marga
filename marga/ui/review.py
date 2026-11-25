@@ -1,20 +1,23 @@
-"""Aba Revisão: duas colunas (fonte ou PDF), seleção, comentários, links e compilação paralela."""
+"""Aba Revisão: duas colunas (fonte, slides ou PDF), seleção, comentários, links e compilação paralela."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, latex, outline, synctex
+from marga.core import actions, latex, office, outline, slides, synctex
 from marga.core import pdf as pdfmod
 from marga.core.anchors import anchor_from_offsets, lines_anchor, make_anchor
 from marga.core.diffing import DiffRow, diff_rows
+from marga.core.formats import NOTES_LABEL
 from marga.core.models import (
     AGENT_STATUSES,
     ANNOTATION_TYPES,
@@ -30,7 +33,7 @@ from marga.core.models import (
     Version,
 )
 from marga.core.outline import Outline, Section
-from marga.core.textmap import find_phrase, latex_to_plain, line_end, line_starts
+from marga.core.textmap import find_phrase, latex_to_plain, line_end, line_starts, to_linecol
 from marga.core.versions import (
     blob_path,
     extracted_text,
@@ -39,12 +42,13 @@ from marga.core.versions import (
     manifest_hash,
     page_of_line,
     previous_version,
+    read_blob,
     version_text,
     version_texts,
 )
 from marga.core.workspace import MargaError, Workspace
 from marga.ui import state
-from marga.ui.components import event, pdf_view, source_view
+from marga.ui.components import event, pdf_view, slide_view, source_view
 from marga.ui.render import KIND_ICON, short, short_block, suggestion_diff
 
 SIDES = ("L", "R")
@@ -58,7 +62,7 @@ PAGE_CHUNK = 20
 class View:
     side: str
     doc: Document
-    mode: str  # "Fonte" | "PDF"
+    mode: str  # "Fonte" | "Slides" | "PDF"
     versions: list[Version]
     version: Version
 
@@ -113,9 +117,21 @@ def _source_sections(root: str, doc_id: str, n: int, main: str, files_key: str) 
     return [asdict(s) for s in outline.latex_sections(texts, main, doc.root)]
 
 
+def _slide_sections(ws: Workspace, v: View) -> list[Section]:
+    """PowerPoint: um atalho por slide, com a página (o slide) e a linha do texto onde ele começa."""
+    try:
+        ext = extracted_text(ws, v.doc, v.version, v.doc.root)
+    except MargaError:
+        return []
+    return [Section(level=1, title=s["title"], page=ext.page_of_line(s["line"]), file=v.doc.root, line=s["line"])
+            for s in ext.sections]
+
+
 def _outline(ws: Workspace, v: View, result) -> Outline:
     """Seções do PDF mostrado (PDF avulso ou LaTeX compilado); vazio quando não há o que mostrar."""
     try:
+        if v.doc.kind == "pptx":
+            return Outline(_slide_sections(ws, v), "slides")
         if v.doc.kind == "pdf":
             return Outline.from_dict(_pdf_outline(str(ws.root), v.version.files[v.doc.root]))
         if v.doc.kind == "latex" and result is not None and result.has_pdf:
@@ -171,7 +187,7 @@ def render(ws: Workspace) -> None:
     bar[1].toggle("Diff vs anterior", key="show_diff")
     bar[2].toggle("Comentários no texto", key="show_threads")
     bar[3].caption("Fonte: arraste para selecionar, ou clique/arraste nos números de linha (shift estende). "
-                   "PDF: clique = linha do fonte, arraste = trecho.")
+                   "PDF: clique = linha do fonte, arraste = trecho. Slides: selecione o texto ou clique num parágrafo.")
 
     head = st.columns(2, gap="medium")
     views = [_controls(ws, side, docs, head[i]) for i, side in enumerate(SIDES)]
@@ -185,6 +201,8 @@ def render(ws: Workspace) -> None:
         with body[i]:
             if v.mode == "PDF":
                 _pdf_panel(ws, v)
+            elif v.mode == "Slides":
+                _slides_panel(ws, v)
             else:
                 _source_panel(ws, v, ss["show_diff"], ss["show_threads"])
             if owners[v.doc.id] == v.side:
@@ -202,14 +220,15 @@ def _controls(ws: Workspace, side: str, docs: list[Document], container) -> View
     if ss.get(key_doc) not in ids:
         ss[key_doc] = ids[0] if side == "L" or len(ids) == 1 else ids[1]
     with container:
-        c = st.columns([5, 3, 2.4], vertical_alignment="bottom")
+        three = len(by_id[ss[key_doc]].modes) > 2  # PowerPoint: Fonte, Slides e PDF precisam de mais espaço
+        c = st.columns([4.2, 4.4, 2.4] if three else [5, 3, 2.4], vertical_alignment="bottom")
         doc_id = c[0].selectbox("Documento", ids, key=key_doc,
                                 format_func=lambda i: f"{KIND_ICON[by_id[i].kind]} {by_id[i].label}")
         doc = by_id[doc_id]
-        modes = ["Fonte", "PDF"] if doc.has_pdf else ["Fonte"]
+        modes = doc.modes
         key_mode = f"{side}_mode_{doc_id}"
         if ss.get(key_mode) not in modes:
-            ss[key_mode] = "PDF" if side == "R" and len(ids) == 1 and "PDF" in modes else "Fonte"
+            ss[key_mode] = modes[1] if side == "R" and len(ids) == 1 and len(modes) > 1 else "Fonte"
         mode = c[1].segmented_control("Modo", modes, key=key_mode) or modes[0]
         versions = load_versions(ws, doc_id)
         ns = [v.n for v in versions]
@@ -449,7 +468,135 @@ def _pdf_range(ws: Workspace, v: View, rows: list[DiffRow]) -> tuple[list[DiffRo
     return kept, (a, b, total)
 
 
+# =============================================================== slides
+@st.cache_data(max_entries=48, show_spinner="Desenhando o slide…")
+def _slide_html(root: str, sha: str, page: int, render_version: int) -> dict:
+    slide = slides.render_slide(read_blob(Workspace(root), sha), page)
+    return {"html": slide.html, "w": slide.width, "h": slide.height, "hidden": slide.hidden}
+
+
+@st.cache_data(max_entries=48, show_spinner=False)
+def _slide_keys(root: str, doc_id: str, n: int, page: int) -> dict[str, int]:
+    ws = Workspace(root)
+    doc, version = ws.get_doc(doc_id), get_version(ws, doc_id, n)
+    ext = extracted_text(ws, doc, version, doc.root)
+    if any(info.get("key") for info in ext.lines):
+        return slides.key_lines(ext, page)
+    return slides.key_lines(ext, page, read_blob(ws, version.files[doc.root]))  # versão de antes das chaves
+
+
+def _slide_notes(ext, page: int) -> str:
+    """Notas do apresentador do slide, selecionáveis como o resto (cada uma é uma linha do texto)."""
+    lines = ext.text.split("\n")
+    here = [n for n, info in enumerate(ext.lines, start=1) if info.get("page") == page]
+    start = next((n for n in here if lines[n - 1] == NOTES_LABEL), None)
+    notes = [n for n in here if start and n > start and lines[n - 1].strip()]
+    if not notes:
+        return ""
+    body = "".join(f'<p class="mg-p" data-line="{n}" data-pre="0" data-lead="0"><span class="mg-t">'
+                   f"{html.escape(lines[n - 1])}</span></p>" for n in notes)
+    return f'<div class="mg-notes-h">{html.escape(NOTES_LABEL.rstrip(":"))}</div>{body}'
+
+
+def _slide_marks(ws: Workspace, v: View) -> list[dict]:
+    focus_ann = st.session_state.get("focus_ann")
+    out = []
+    for a in ws.annotations(v.doc.id):
+        an = a.anchor_at(v.n)
+        if an is not None:
+            kind = ("m" if a.is_mark else ("a" if a.is_open else "c")) + (" mg-focus" if a.id == focus_ann else "")
+            out.append({"id": a.id, "kind": kind, "label": a.id, "sl": an.start_line, "sc": an.start_col,
+                        "el": an.end_line, "ec": an.end_col})
+    sel = state.get_selection(v.doc.id)
+    if sel and sel[0].version == v.n:
+        an = sel[0]
+        out.append({"id": "", "kind": "sel", "label": "", "sl": an.start_line, "sc": an.start_col,
+                    "el": an.end_line, "ec": an.end_col})
+    return out
+
+
+def _slides_panel(ws: Workspace, v: View) -> None:
+    """PowerPoint desenhado sem conversão: um slide por vez, com as anotações marcadas no próprio texto."""
+    ss = st.session_state
+    doc = v.doc
+    sha = v.version.files.get(doc.root)
+    try:
+        ext = extracted_text(ws, doc, v.version, doc.root)
+    except MargaError as exc:
+        st.error(str(exc))
+        return
+    total = max((info.get("page") or 0 for info in ext.lines), default=0)
+    if not sha or total < 1:
+        st.info("Esta apresentação não tem slides.")
+        return
+    key_page = f"{v.side}_page_{doc.id}_{v.n}"
+    if not isinstance(ss.get(key_page), int) or not 1 <= ss[key_page] <= total:
+        ss[key_page] = 1
+    secs = _slide_sections(ws, v)
+    nav = st.columns([1, 2, 1, 1.6, 7.4], vertical_alignment="center")
+    nav[0].button("◀", key=f"{key_page}_sprev", on_click=_shift_page, args=(key_page, -1, total),
+                  disabled=ss[key_page] <= 1)
+    nav[1].number_input("Slide", min_value=1, max_value=total, step=1, key=key_page, label_visibility="collapsed")
+    nav[2].button("▶", key=f"{key_page}_snext", on_click=_shift_page, args=(key_page, 1, total),
+                  disabled=ss[key_page] >= total)
+    nav[3].caption(f"de {total}")
+    page = int(ss[key_page])
+    if secs:
+        _section_picker(nav[4], v, secs, outline.SOURCE_LABELS["slides"], key_page, page)
+    try:
+        drawn = _slide_html(str(ws.root), sha, page, slides.RENDER_VERSION)
+    except MargaError as exc:
+        st.error(str(exc))
+        return
+    marks = _slide_marks(ws, v)
+    data = {
+        "html": slides.bind_lines(drawn["html"], _slide_keys(str(ws.root), doc.id, v.n, page), ext.text),
+        "html_key": f"{sha}:{page}:{slides.RENDER_VERSION}",
+        "w": drawn["w"], "h": drawn["h"],
+        "notes": _slide_notes(ext, page),
+        "anns": marks,
+        "rev": _rev(marks),
+    }
+    res = slide_view(data, key=f"sld_{v.side}_{doc.id}_{v.n}")
+    info = [f"v{v.n}", "slide oculto" if drawn["hidden"] else "",
+            "desenhado sem conversão: fontes e efeitos podem diferir (o modo PDF mostra o slide fiel)"]
+    if v.n != v.latest.n:
+        info.append("versão antiga: só leitura")
+    st.caption(" · ".join(x for x in info if x))
+
+    ev = event(res, "select")
+    if ev and state.fresh(ev.get("nonce")):
+        anchor = make_anchor(ext.text, doc.root, v.n, int(ev["sl"]), int(ev["sc"]), int(ev["el"]), int(ev["ec"]))
+        anchor.page = ext.page_of_line(anchor.start_line) or page
+        if anchor.quote.strip():
+            state.set_selection(doc.id, anchor, v.side)
+            state.set_focus(doc.id, anchor.file, anchor.start_line)
+            _follow(doc.id, v.n, anchor.file)
+        st.rerun()
+    ev = event(res, "focus")
+    if ev and state.fresh(ev.get("nonce")):
+        ss["focus_ann"] = ev.get("id")
+        st.rerun()
+
+
 # ================================================================== PDF
+def _office_pdf(ws: Workspace, v: View) -> Path | None:
+    """PowerPoint no modo PDF: o PDF convertido pelo LibreOffice (na primeira vez, converte)."""
+    target = office.pdf_path(ws, v.doc, v.version)
+    if target.exists():
+        return target
+    if not office.available():
+        st.info(f"Para ver os slides como PDF, {office.INSTALL_HINT}. O modo **Slides** mostra a apresentação "
+                "sem converter nada.")
+        return None
+    try:
+        with st.spinner(f"Convertendo {v.doc.label} v{v.n} em PDF com o LibreOffice…"):
+            return office.to_pdf(ws, v.doc, v.version)
+    except MargaError as exc:
+        st.error(str(exc))
+        return None
+
+
 def _pdf_text(ws: Workspace, v: View) -> pdfmod.PdfText:
     return pdfmod.pdf_text(ws, v.version.files[v.doc.root])
 
@@ -467,6 +614,10 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
         return
     if doc.kind == "pdf":
         pdf_path = blob_path(ws, v.version.files[doc.root])
+    elif doc.kind == "pptx":
+        pdf_path = _office_pdf(ws, v)
+        if pdf_path is None:
+            return
     else:
         result = latex.load_result(ws, doc.id, v.n)
         if result is None:
@@ -523,11 +674,14 @@ def _section_picker(container, v: View, secs: list[Section], source_label: str, 
     current = ss.get(key)
     valid = isinstance(current, int) and (
         (current == -1 and here is None) or (0 <= current < len(secs) and outline.contains(secs, current, page)))
+    if v.doc.kind == "pptx":  # um slide por "seção": a lista sempre mostra o slide atual
+        valid = current == (-1 if here is None else here)
     if not valid:
         ss[key] = -1 if here is None else here
+    summary = f"§ {len(secs)} slides" if v.doc.kind == "pptx" else f"§ {len(secs)} seções ({source_label})"
     container.selectbox(
         "Seção", [-1, *range(len(secs))], key=key, label_visibility="collapsed",
-        format_func=lambda i: f"§ {len(secs)} seções ({source_label})" if i < 0 else _section_label(secs[i]),
+        format_func=lambda i: summary if i < 0 else _section_label(secs[i], page=v.doc.kind != "pptx"),
         on_change=_goto_section, args=(v.doc.id, v.n, key, key_page, [(s.page, s.file, s.line) for s in secs]),
         help=f"Seções: {source_label}. Digite para filtrar.",
     )
@@ -549,7 +703,26 @@ def _merge(boxes: list[tuple]) -> list[tuple]:
     return list(dict.fromkeys(tuple(round(x, 1) for x in b) for b in boxes))
 
 
+def _slide_fragments(quote: str) -> list[str]:
+    """Pedaços de uma citação do texto do PowerPoint que aparecem iguais no PDF: sem "# ", "- " e "|"."""
+    out = []
+    for line in quote.split("\n"):
+        line = re.sub(r"^\s*(#+|-)\s+", "", line).strip()
+        if not line or line.startswith("=== slide") or line == NOTES_LABEL:
+            continue
+        if line.startswith("|"):
+            out += [cell.strip() for cell in line.strip("|").split("|") if cell.strip()]
+        else:
+            out.append(line)
+    return out
+
+
 def _anchor_boxes(ws: Workspace, v: View, pdf_path: Path, result, anchor: Anchor, page: int) -> list[tuple]:
+    if v.doc.kind == "pptx":
+        slide = anchor.page or page_of_line(ws, v.doc, v.version, anchor.file, anchor.start_line)
+        if slide != page:
+            return []
+        return _merge([box for frag in _slide_fragments(anchor.quote) for box in pdfmod.search_rects(pdf_path, page, frag)])
     if v.doc.kind == "pdf":
         pt = _pdf_text(ws, v)
         line_boxes = pt.line_boxes(page, anchor.start_line, anchor.end_line)
@@ -614,10 +787,39 @@ def _hit_to_file(v: View, result, hits: list[tuple[Path, int]]) -> tuple[str, in
     return next((f for f in found if f[1] > 0), found[0] if found else None)
 
 
+def _slide_pdf_pick(ws: Workspace, v: View, pdf_path: Path, page: int, point, rect) -> None:
+    """PowerPoint no modo PDF: o texto sob o clique (ou dentro do retângulo) é procurado no texto do slide."""
+    doc = v.doc
+    ext = extracted_text(ws, doc, v.version, doc.root)
+    lines = [n for n, info in enumerate(ext.lines, start=1) if info.get("page") == page]
+    phrase = pdfmod.text_near(pdf_path, page, *point) if point else pdfmod.text_in_rect(pdf_path, page, rect)
+    found = []
+    if lines and phrase.strip():
+        starts = line_starts(ext.text)
+        lo, hi = starts[lines[0] - 1], line_end(ext.text, lines[-1], starts)
+        found = find_phrase(ext.text, phrase, start=lo, end=hi, max_results=1, min_score=0.55)
+    if not found:
+        state.flash("warn", "Não achei esse trecho no texto do slide.")
+        st.rerun()
+    m = found[0]
+    if point:  # clique: o parágrafo inteiro, como um clique no número da linha
+        line = to_linecol(ext.text, m.start)[0]
+        anchor = lines_anchor(ext.text, doc.root, v.n, line, line, page)
+    else:
+        anchor = anchor_from_offsets(ext.text, doc.root, v.n, m.start, m.end, page)
+    state.set_selection(doc.id, anchor, v.side)
+    state.set_focus(doc.id, anchor.file, anchor.start_line)
+    _follow(doc.id, v.n, anchor.file)
+    st.rerun()
+
+
 def _pdf_pick(ws: Workspace, v: View, pdf_path: Path, result, page: int, point, rect) -> None:
     """Clique (point) ou retângulo (rect) no PDF → seleção no fonte."""
     doc, n = v.doc, v.n
     anchor: Anchor | None = None
+    if doc.kind == "pptx":
+        _slide_pdf_pick(ws, v, pdf_path, page, point, rect)
+        return
     if doc.kind == "pdf":
         pt = _pdf_text(ws, v)
         text, file, latex_mode = pt.text, doc.root, False
@@ -761,9 +963,9 @@ def _set_status(ws: Workspace, ann_id: str, status: str) -> None:
 
 
 def page_of_anchor(ws: Workspace, doc: Document, anchor: Anchor) -> int | None:
-    if doc.kind == "pdf":
+    if doc.kind in ("pdf", "pptx"):  # página do PDF avulso; slide do PowerPoint (o mesmo número no PDF)
         version = get_version(ws, doc.id, anchor.version)
-        return anchor.page or pdfmod.pdf_text(ws, version.files[doc.root]).page_of_line(anchor.start_line)
+        return anchor.page or page_of_line(ws, doc, version, anchor.file, anchor.start_line)
     if doc.kind != "latex" or not synctex.available():
         return None
     result = latex.load_result(ws, doc.id, anchor.version)
@@ -795,7 +997,7 @@ def go_to(ws: Workspace, ann_id: str) -> None:
     for side in showing:
         state.request(f"{side}_ver_{ann.doc}", an.version)
         state.request(f"{side}_file_{ann.doc}_{an.version}", an.file)
-        if ss.get(f"{side}_mode_{ann.doc}") == "PDF":
+        if ss.get(f"{side}_mode_{ann.doc}") in ("PDF", "Slides"):
             page = page or page_of_anchor(ws, doc, an)
             if page:
                 state.request(f"{side}_page_{ann.doc}_{an.version}", page)

@@ -143,3 +143,15 @@ def test_word_powerpoint_and_html_render_linked_and_jump_to_a_slide(demo_ws, mon
         at.session_state["nav"] = section
         at.run()
         assert not at.exception, (section, at.exception)
+
+
+def test_powerpoint_shows_slides_and_pdf(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "apresentacao.pptx")
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["L_doc"] = at.session_state["R_doc"] = doc.id
+    at.session_state[f"L_mode_{doc.id}"], at.session_state[f"R_mode_{doc.id}"] = "Slides", "PDF"
+    at.session_state[f"L_page_{doc.id}_1"] = 2
+    at.run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key=f"L_sec_{doc.id}_1").value == 1  # o seletor acompanha o slide 2

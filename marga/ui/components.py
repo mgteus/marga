@@ -17,10 +17,16 @@ _SOURCE = component(
     "marga_source_view", css=_asset("source_view.css"), js=_asset("source_view.js"), isolate_styles=False
 )
 _PDF = component("marga_pdf_view", css=_asset("pdf_view.css"), js=_asset("pdf_view.js"), isolate_styles=False)
+_SLIDES = component("marga_slide_view", css=_asset("slide_view.css"), js=_asset("slide_view.js"),
+                    isolate_styles=False)
 
 
 def _noop() -> None:
     pass
+
+
+def slide_view(data: dict, key: str):
+    return _SLIDES(key=key, data=data, on_select_change=_noop, on_focus_change=_noop)
 
 
 def source_view(data: dict, key: str):

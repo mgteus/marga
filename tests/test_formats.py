@@ -10,7 +10,7 @@ import pptx
 import pytest
 from pptx.util import Inches
 
-from marga.core import actions, export, formats
+from marga.core import actions, export, ooxml
 from marga.core.anchors import anchor_from_offsets
 from marga.core.formats import extract
 from marga.core.versions import doc_status, latest_version, page_of_line, version_text
@@ -195,7 +195,7 @@ def test_unreadable_files_give_clear_errors(monkeypatch):
     zipfile.ZipFile(empty, "w").close()
     with pytest.raises(MargaError, match="falta a parte word/document.xml"):
         extract("docx", empty.getvalue())
-    monkeypatch.setattr(formats, "MAX_PART_BYTES", 10)
+    monkeypatch.setattr(ooxml, "MAX_PART_BYTES", 10)
     with pytest.raises(MargaError, match="grande demais"):
         extract("docx", _docx_bytes(_run("texto") * 10))
 

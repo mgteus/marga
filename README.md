@@ -33,6 +33,7 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | ⚡ **Compilação paralela** | `latexmk` compila os documentos visíveis ao mesmo tempo; um erro de compilação vira comentário com um clique. |
 | 📕 **PDFs avulsos** | PDFs sem fonte também são revisáveis, a partir do texto extraído de cada página. |
 | 📘 **Word, PowerPoint e HTML** | `.docx`, `.pptx` e `.html` viram documentos revisáveis: o Marga extrai o texto (parágrafos, títulos, tópicos de cada slide, tabelas) e compara as versões por ele. Quem edita o próprio arquivo é o agente. |
+| 📙 **Slides do PowerPoint** | Além do texto, o PowerPoint aparece desenhado slide a slide, sem converter nada (modo **Slides**), ou como PDF pelo LibreOffice (modo **PDF**). Selecione e comente direto no slide. |
 | 📦 **Projetos do Overleaf** | O `.zip` baixado do Overleaf vira um documento LaTeX completo: vários `.tex`, figuras e bibliografia. Um `.zip` novo do mesmo projeto vira a próxima versão do documento. |
 | 🧭 **Seções** | Em PDFs grandes, uma lista de seções leva direto a cada capítulo e filtra o texto. Ela vem do fonte LaTeX, dos marcadores do PDF ou de títulos detectados pela tipografia. |
 | 🔒 **Local e não destrutivo** | Quem edita é o agente. O Marga só escreve em `.marga/` e em `uploads/`, onde guarda as cópias dos arquivos enviados; seus arquivos de fora de `uploads/` nunca são sobrescritos. |
@@ -46,6 +47,7 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | [uv](https://docs.astral.sh/uv/) | Instala as dependências e roda o app | Sim |
 | Python 3.11+ | Runtime | Sim (se faltar, o uv baixa um) |
 | TeX Live: `latexmk`, `synctex` e `pdflatex`/`xelatex`/`lualatex` | Compilar LaTeX e ligar o clique no PDF à linha do fonte | Não. Sem ele, o resto funciona e a seleção no PDF usa busca aproximada de texto |
+| LibreOffice | Mostrar o PowerPoint como PDF (modo **PDF**) | Não. Sem ele, o PowerPoint aparece no modo **Slides**, desenhado sem conversão, e no texto |
 
 <details>
 <summary>Como instalar o uv e o TeX Live</summary>
@@ -63,6 +65,14 @@ sudo apt install latexmk texlive-latex-extra texlive-lang-portuguese   # Debian/
 ```
 
 O exemplo usa `babel` com `brazilian`, por isso o pacote de idioma português.
+
+```bash
+brew install --cask libreoffice   # macOS: PowerPoint como PDF
+```
+
+```bash
+sudo apt install libreoffice-impress   # Debian/Ubuntu
+```
 
 </details>
 
@@ -117,7 +127,7 @@ flowchart LR
    | **Enviar** | Um arquivo do computador: `.zip` do Overleaf, `.pdf`, `.tex`, `.docx`, `.pptx`, `.html`, `.md` ou `.txt` |
    | **Pasta** | O que já está na pasta: pastas LaTeX (o `.tex` com `\documentclass`), PDFs avulsos, Word (`.docx`), PowerPoint (`.pptx`), HTML (`.html`, `.htm`) e textos (`.md`, `.txt`, `.rst`) |
    | **Disco** | O caminho de um arquivo (ex.: `~/Downloads/projeto.zip`), sem passar pelo navegador. Melhor para arquivos grandes |
-2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, PowerPoint, HTML e textos têm só o modo Fonte, com o texto do arquivo.
+2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, HTML e textos têm só o modo Fonte, com o texto do arquivo. O PowerPoint tem três: **Fonte** (o texto), **Slides** (desenhado sem conversão) e **PDF** (convertido pelo LibreOffice).
    - **§ Seções:** no modo PDF, a lista ao lado do número da página acompanha a página atual e salta para qualquer capítulo ou seção. Digite parte do título para filtrar.
    - No texto de um PDF avulso, a mesma lista filtra o trecho mostrado. Acima de 120 páginas, o texto aparece por seção ou em blocos de 20 páginas.
    - No fonte LaTeX, **§ Ir para seção** abre o arquivo na linha do título e leva junto o PDF da outra coluna. No Word e no HTML, a mesma lista vai para cada título; no PowerPoint, **§ Ir para slide** vai para cada slide.
@@ -161,6 +171,8 @@ Cada `.docx`, `.pptx` ou `.html` é um documento próprio (B, C…). O Marga ext
 
 - Com o controle de alterações ligado, vale o texto como se todas as revisões fossem aceitas. Caixas de texto viram linhas logo depois do parágrafo em que estão.
 - O texto extraído é guardado com cada versão. O diff, a re-ancoragem e a aba *Comparar versões* usam esse texto; as seleções no PowerPoint também guardam o slide.
+- PowerPoint em **Slides**: o Marga desenha cada slide direto do `.pptx` (tema, layout, mestre, formas, imagens, tabelas), sem converter nada. Arraste sobre o texto para selecionar um trecho, ou clique num parágrafo para pegá-lo inteiro; as notas do apresentador aparecem embaixo. É um desenho aproximado: as fontes são as do navegador, e gráficos e SmartArt viram uma caixa.
+- PowerPoint em **PDF**: o LibreOffice converte a versão uma vez (alguns segundos) e o PDF fica guardado; a página N é o slide N, inclusive com slides ocultos. Clique num parágrafo ou arraste um retângulo para selecionar, como num PDF avulso.
 - No pacote, o agente recebe o caminho do arquivo e como editá-lo: o próprio `.docx`/`.pptx` (por exemplo, com python-docx ou python-pptx), preservando a formatação, e o código-fonte do `.html`. Como as linhas do pacote são as do texto extraído, ele localiza cada trecho pela citação exata; no HTML, cada comentário também traz as linhas do arquivo.
 - Se o arquivo mudar no disco (o agente salvou, ou você editou no Word), a barra lateral oferece **Registrar vN+1**, como nos outros tipos.
 
@@ -244,8 +256,8 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 ├── rounds/NNN/                  round.json, bundle.{md,json,html} e response.json
 ├── rounds/latest.{md,json}      a rodada mais recente
 ├── AGENT.md                     guia fixo para o agente que aplica as rodadas
-├── build/A/vN/                  saídas do latexmk (out/), snapshot da versão (src/), result.json e outline.json
-└── cache/                       texto (pdftext/) e seções (outline/) extraídos dos PDFs avulsos
+├── build/A/vN/                  saídas do latexmk (out/), snapshot da versão (src/), result.json, outline.json e o PDF do PowerPoint (slides.pdf)
+└── cache/                       texto (pdftext/) e seções (outline/) dos PDFs avulsos; perfil do LibreOffice (libreoffice/)
 ```
 
 Apague `.marga/` para recomeçar do zero. Seus arquivos continuam onde estão.
@@ -291,7 +303,8 @@ O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`]
 - A detecção de títulos em PDFs sem marcadores é uma heurística. Ela funciona bem com títulos numerados em negrito ou maiores que o texto (o padrão do LaTeX), mas pode errar em layouts incomuns.
 - Só se comenta na versão mais recente, e só quando o disco bate com ela (registre a nova versão antes).
 - Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados. Documentos Word, PowerPoint, HTML e PDF avulso são um arquivo só, guardado inteiro em cada versão.
-- Word, PowerPoint e HTML aparecem só como texto, sem a página ou o slide desenhados. Imagens, gráficos, SmartArt, cabeçalhos, rodapés e comentários do Word ficam de fora, e os formatos antigos (`.doc`, `.ppt`) não são lidos: salve-os como `.docx`/`.pptx`.
+- Word e HTML aparecem só como texto. No texto extraído, imagens, gráficos, SmartArt, cabeçalhos, rodapés e comentários do Word ficam de fora, e os formatos antigos (`.doc`, `.ppt`) não são lidos: salve-os como `.docx`/`.pptx`.
+- O modo **Slides** é aproximado: usa as fontes do navegador e não desenha gráficos, SmartArt nem imagens EMF/WMF. Para ver o slide fiel, use o modo **PDF** (LibreOffice), que substitui fontes que não tiver.
 - No PDF, a marca de uma imagem (PNG, JPG) cobre a imagem exata. Já a de uma figura vetorial (um PDF incluído com `\includegraphics`) é a caixa do SyncTeX recortada à página, que pode ser maior que a figura.
 - O **📁 Finder** abre o seletor de pastas no computador onde o servidor roda. No Linux, ele precisa do `zenity` ou do `kdialog`.
 - Não há editor de texto no app nem chamada direta a uma API de LLM: o pacote é feito para um agente com acesso à pasta.

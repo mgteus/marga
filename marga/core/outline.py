@@ -30,6 +30,7 @@ SOURCE_LABELS = {
     "fonte": "seções do fonte LaTeX",
     "marcadores": "marcadores do PDF",
     "tipografia": "títulos detectados no PDF",
+    "slides": "slides da apresentação",
 }
 TOP_OF_PAGE = 130.0  # pontos: título acima disso abre a página
 

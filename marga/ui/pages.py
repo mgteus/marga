@@ -47,7 +47,7 @@ def render_links(ws: Workspace) -> None:
 
 # ======================================================= comparar versões
 def _open_side_by_side(doc: Document, a: int, b: int) -> None:
-    mode = "PDF" if doc.has_pdf else "Fonte"
+    mode = doc.modes[1] if len(doc.modes) > 1 else "Fonte"  # PDF (LaTeX, PDF avulso) ou Slides (PowerPoint)
     for side, n in (("L", a), ("R", b)):
         state.request(f"{side}_doc", doc.id)
         state.request(f"{side}_mode_{doc.id}", mode)

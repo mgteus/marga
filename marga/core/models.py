@@ -16,7 +16,9 @@ DOC_KINDS: dict[str, str] = {
 }
 EXTRACTED_KINDS = frozenset({"docx", "pptx", "html"})  # um arquivo; o texto revisado é extraído dele (formats.py)
 BINARY_KINDS = frozenset({"pdf", "docx", "pptx"})  # arquivos que não são texto (sem codificação)
-PDF_KINDS = frozenset({"latex", "pdf"})  # têm o modo PDF; os outros mostram só o texto
+# Modos de cada coluna: Fonte (o texto), Slides (o PowerPoint desenhado sem conversão) e PDF (compilado,
+# o próprio arquivo ou convertido pelo LibreOffice). O segundo é o padrão quando só há um documento.
+VIEW_MODES: dict[str, list[str]] = {"latex": ["Fonte", "PDF"], "pdf": ["Fonte", "PDF"], "pptx": ["Fonte", "Slides", "PDF"]}
 
 COMMENT_TYPES: dict[str, str] = {
     "corrigir": "Corrigir",
@@ -234,8 +236,12 @@ class Document:
         return f"{self.id} · {self.name}"
 
     @property
+    def modes(self) -> list[str]:
+        return VIEW_MODES.get(self.kind, ["Fonte"])
+
+    @property
     def has_pdf(self) -> bool:
-        return self.kind in PDF_KINDS
+        return "PDF" in self.modes
 
     @property
     def page_word(self) -> str:

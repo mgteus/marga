@@ -7,7 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, folders, latex
+from marga.core import actions, folders, latex, office
 from marga.core.pdf import page_count
 from marga.core.versions import blob_path, doc_status, latest_version
 from marga.core.workspace import MARGA_DIR, MargaError, Workspace
@@ -42,7 +42,9 @@ def render(default_path: str) -> Workspace | None:
             return None
         folders.remember_workspace(ws.root)
         tools = latex.tools()
-        st.caption(" · ".join(f"{'✅' if tools[t] else '❌'} {t}" for t in ("latexmk", "synctex")))
+        tools["LibreOffice"] = office.available()
+        st.caption(" · ".join(f"{'✅' if tools[t] else '❌'} {t}" for t in ("latexmk", "synctex", "LibreOffice")),
+                   help="latexmk e synctex compilam o LaTeX; o LibreOffice converte PowerPoint em PDF (modo PDF).")
         st.divider()
         _documents(str(ws.root))
         _add_document(ws)

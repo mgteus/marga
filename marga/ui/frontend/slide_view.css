@@ -1,0 +1,85 @@
+.mg-slides { position: relative; padding-top: 14px; }
+.mg-slides .mg-frame {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border: 1px solid var(--st-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  background: #fff;
+}
+.mg-slides .mg-stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.mg-slides .mg-marks { position: absolute; inset: 0; pointer-events: none; }
+
+/* O slide (HTML gerado por marga/core/slides.py) */
+.mg-slide {
+  position: relative;
+  overflow: hidden;
+  color: #000;
+  font-family: "Aptos", "Calibri", "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mg-slide .mg-sh { position: absolute; box-sizing: border-box; }
+.mg-slide .mg-tb {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+.mg-slide .mg-tc { display: flex; flex-direction: column; }
+.mg-slide .mg-p { margin: 0; white-space: pre-wrap; overflow-wrap: break-word; }
+.mg-slide .mg-nowrap .mg-p { white-space: pre; }
+.mg-slide .mg-bu { display: inline-block; text-indent: 0; user-select: none; }
+.mg-slide .mg-nl { display: block; height: 0; overflow: hidden; }
+.mg-slide .mg-pic { overflow: hidden; }
+.mg-slide .mg-pic img { position: absolute; max-width: none; user-select: none; -webkit-user-drag: none; }
+.mg-slide svg.mg-ln { position: absolute; overflow: visible; }
+.mg-slide svg.mg-geo { position: absolute; left: 0; top: 0; overflow: visible; }
+.mg-slide .mg-obj {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(90, 90, 90, 0.6);
+  background: rgba(128, 128, 128, 0.08);
+  color: #555;
+  font-family: system-ui, -apple-system, sans-serif;
+  text-align: center;
+}
+.mg-slide .mg-tbl { border-collapse: collapse; table-layout: fixed; width: 100%; }
+.mg-slide .mg-tbl td { overflow: hidden; box-sizing: border-box; }
+.mg-slides [data-line] { cursor: text; }
+.mg-slides [data-line]:hover { outline: 1px dashed rgba(56, 139, 253, 0.55); outline-offset: 1px; }
+
+/* Notas do apresentador, abaixo do slide */
+.mg-slides .mg-notes {
+  display: none;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--st-border-color, rgba(128, 128, 128, 0.35));
+  border-radius: 4px;
+  font: 13.5px/1.5 var(--st-font, system-ui, -apple-system, sans-serif);
+}
+.mg-slides .mg-notes .mg-notes-h { font-size: 12px; font-weight: 600; opacity: 0.7; margin-bottom: 2px; }
+.mg-slides .mg-notes .mg-p { margin: 0; white-space: pre-wrap; }
+
+/* Marcas: mesmas cores do PDF */
+.mg-slides .mg-rect { position: absolute; border-radius: 2px; }
+.mg-slides .mg-a { background: rgba(212, 167, 44, 0.26); outline: 1px solid rgba(212, 167, 44, 0.9); }
+.mg-slides .mg-c { background: rgba(128, 128, 128, 0.14); outline: 1px dashed rgba(128, 128, 128, 0.7); }
+.mg-slides .mg-m { background: rgba(130, 80, 223, 0.18); outline: 1px solid rgba(130, 80, 223, 0.8); }
+.mg-slides .mg-sel { background: rgba(56, 139, 253, 0.26); outline: 1.5px solid rgba(56, 139, 253, 0.95); }
+.mg-slides .mg-focus { outline: 2px solid var(--st-primary-color, #ff4b4b); }
+.mg-slides .mg-tag {
+  position: absolute;
+  left: -2px;
+  top: -1.45em;
+  padding: 0 5px;
+  border-radius: 8px;
+  font: 600 11px/1.35 var(--st-font, system-ui, -apple-system, sans-serif);
+  white-space: nowrap;
+  background: rgba(212, 167, 44, 0.95);
+  color: #1f2328;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.mg-slides .mg-m .mg-tag { background: rgba(130, 80, 223, 0.92); color: #fff; }
