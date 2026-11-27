@@ -18,8 +18,8 @@ class DiffRow:
     spans: list[tuple[int, int]] = field(default_factory=list)  # trechos alterados (code points)
 
 
-def _changed_spans(a: str, b: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    """Trechos que diferem entre duas linhas, por palavra."""
+def changed_spans(a: str, b: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Trechos que diferem entre dois textos, por palavra (offsets em ``a`` e em ``b``)."""
     ta = [m.span() for m in _TOKEN.finditer(a)]
     tb = [m.span() for m in _TOKEN.finditer(b)]
     sm = difflib.SequenceMatcher(None, [a[s:e] for s, e in ta], [b[s:e] for s, e in tb], autojunk=False)
@@ -54,7 +54,7 @@ def diff_rows(old: str | None, new: str) -> list[DiffRow]:
         adds = [DiffRow("add", None, j + 1, new_lines[j]) for j in range(j1, j2)]
         if tag == "replace":
             for k in range(min(len(dels), len(adds))):
-                dels[k].spans, adds[k].spans = _changed_spans(dels[k].text, adds[k].text)
+                dels[k].spans, adds[k].spans = changed_spans(dels[k].text, adds[k].text)
         rows.extend(dels)
         rows.extend(adds)
     return rows

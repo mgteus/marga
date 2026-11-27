@@ -17,6 +17,7 @@ from typing import BinaryIO
 from urllib.parse import unquote
 
 from . import anchors as anc
+from . import unrequested as unreq
 from .formats import FORMATS, kind_for
 from .latex import DOCCLASS_RE, detect_engine, find_main_candidates
 from .models import (
@@ -31,9 +32,20 @@ from .models import (
     Document,
     Link,
     Reply,
+    UnrequestedChange,
     Version,
 )
-from .versions import SKIP_DIRS, TEXT_EXTS, doc_status, page_of_line, read_working_text, snapshot, version_texts
+from .versions import (
+    SKIP_DIRS,
+    TEXT_EXTS,
+    doc_status,
+    get_version,
+    load_versions,
+    page_of_line,
+    read_working_text,
+    snapshot,
+    version_texts,
+)
 from .workspace import MargaError, Workspace
 from .zipimport import extract_zip
 
@@ -392,6 +404,7 @@ class RegisterReport:
     states: dict[str, str] = field(default_factory=dict)
     imported: int = 0
     round: int | None = None
+    unrequested: int = 0  # alertas de alteração sem pedido na nova versão
 
     def summary(self) -> str:
         counts: dict[str, int] = {}
@@ -404,6 +417,8 @@ class RegisterReport:
             parts.append(", ".join(f"{n} {s}" for s, n in sorted(counts.items())))
         if self.imported:
             parts.append(f"{self.imported} nota(s) do agente importada(s)")
+        if self.unrequested:
+            parts.append(f"⚠️ {self.unrequested} alteração(ões) sem pedido (veja em Comparar versões)")
         return " · ".join(parts)
 
 
@@ -421,6 +436,8 @@ def register_version(ws: Workspace, doc_id: str, note: str = "") -> RegisterRepo
     new = snapshot(ws, doc, origin, note=note, round_n=rnd.n if rnd else None)
 
     report = RegisterReport(doc=doc_id, version=new, previous=prev, round=rnd.n if rnd else None)
+    old_texts: dict[str, str] | None = None
+    new_texts: dict[str, str] | None = None
     if prev is not None:
         old_texts = version_texts(ws, doc, prev)
         new_texts = version_texts(ws, doc, new)
@@ -440,7 +457,30 @@ def register_version(ws: Workspace, doc_id: str, note: str = "") -> RegisterRepo
         ws.save_annotations(changed)
     if rnd:
         report.imported = import_response(ws, rnd.n, only_if_present=True)
+        check = unreq.check_version(ws, doc, new, old_texts, new_texts)  # o que mudou fora das linhas pedidas
+        report.unrequested = len(check.items) if check else 0
     return report
+
+
+def anchor_in_version(ws: Workspace, ann: Annotation, version_n: int) -> Anchor | None:
+    """Onde a anotação fica numa versão do documento: a âncora dela nessa versão ou, se ela não passou por essa
+    versão (foi criada depois ou fechada antes), o mesmo trecho procurado a partir da âncora mais próxima.
+    ``None`` se o trecho não existe nessa versão."""
+    found = ann.anchor_at(version_n)
+    if found is not None:
+        return found
+    doc = ws.get_doc(ann.doc)
+    base = min([ann.anchor, *ann.anchor_history], key=lambda a: abs(a.version - version_n))
+    try:
+        source, target = get_version(ws, doc.id, base.version), get_version(ws, doc.id, version_n)
+    except MargaError:
+        return None
+    res = anc.reanchor(base, version_texts(ws, doc, source), version_texts(ws, doc, target), version_n)
+    if res.state == "orfao":
+        return None
+    if doc.kind in ("pdf", "pptx"):  # a página (PDF avulso) ou o slide pode ser outro nessa versão
+        res.anchor.page = page_of_line(ws, doc, target, res.anchor.file, res.anchor.start_line)
+    return res.anchor
 
 
 def can_annotate(ws: Workspace, doc: Document, version_n: int) -> tuple[bool, str]:
@@ -522,6 +562,54 @@ def add_reply(ws: Workspace, ann_id: str, text: str, reopen: bool = False) -> An
 def delete_annotation(ws: Workspace, ann_id: str) -> None:
     _require(ws, ann_id)
     ws.delete_annotation(ann_id)
+
+
+# ------------------------------------------------- alterações sem pedido
+def decide_unrequested(ws: Workspace, doc_id: str, version_n: int, ns: int | list[int],
+                       status: str) -> list[UnrequestedChange]:
+    """Aceita (``aceita``), ignora (``ignorada``) ou reabre (``pendente``) alertas de alteração sem pedido."""
+    if status == "comentada":
+        raise MargaError("Para transformar o alerta num comentário, use Pedir para refazer.")
+    ws.get_doc(doc_id)
+    return unreq.decide(ws, doc_id, version_n, [ns] if isinstance(ns, int) else list(ns), status)
+
+
+def comment_unrequested(ws: Workspace, doc_id: str, version_n: int, n: int, type_: str, body: str,
+                        suggestion: str | None = None) -> Annotation:
+    """Pedir para refazer: comenta, na versão atual, o trecho do alerta ``n`` da ``version_n`` e o marca como
+    comentado. O comentário entra na próxima rodada como qualquer outro.
+
+    Se a versão do alerta não é a atual, o trecho é levado até ela pela re-ancoragem; se ele mudou de novo no
+    caminho, o comentário tem de ser feito direto na versão atual.
+    """
+    doc = ws.get_doc(doc_id)
+    check = unreq.get_check(ws, doc_id, version_n)
+    item = check.get(n) if check else None
+    if item is None:
+        raise MargaError(f"O alerta {n} da v{version_n} de {doc_id} não existe.")
+    if item.new is None:
+        raise MargaError(f"{item.file} foi apagado na v{version_n}: não há onde ancorar o comentário. Comente um "
+                         "trecho da versão atual, na aba Revisão, pedindo para restaurar o arquivo.")
+    texts = version_texts(ws, doc, get_version(ws, doc_id, version_n))
+    anchor = item.new
+    if item.old is None:  # arquivo novo: o comentário fica na primeira linha com texto
+        text = texts[item.file]
+        first = next((i for i, line in enumerate(text.split("\n"), 1) if line.strip()), 1)
+        anchor = anc.lines_anchor(text, item.file, version_n, first, first)
+    for later in load_versions(ws, doc_id):
+        if later.n <= version_n:
+            continue
+        later_texts = version_texts(ws, doc, later)
+        res = anc.reanchor(anchor, texts, later_texts, later.n)
+        if res.state not in ("inalterado", "movido"):
+            raise MargaError(f"O trecho do alerta {n} mudou de novo na v{later.n}: comente direto na versão atual, "
+                             "na aba Revisão.")
+        anchor, texts = res.anchor, later_texts
+    if doc.kind in ("pdf", "pptx"):  # a página do PDF avulso ou o slide do PowerPoint
+        anchor.page = page_of_line(ws, doc, get_version(ws, doc_id, anchor.version), anchor.file, anchor.start_line)
+    ann = create_annotation(ws, doc_id, anchor, type_, body, suggestion)
+    unreq.decide(ws, doc_id, version_n, [n], "comentada", comment=ann.id)
+    return ann
 
 
 # ---------------------------------------------------------------- links

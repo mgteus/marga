@@ -15,6 +15,10 @@ _CSS = """<style>
 [data-testid="stColumn"]:has(.st-key-mg_side) {
   position: sticky; top: 4rem; align-self: flex-start; max-height: calc(100vh - 5rem); overflow-y: auto;
 }
+/* A dica "⌘+Enter to apply" do Streamlit vai para uma faixa logo abaixo da caixa de texto, e não para cima do
+   texto. A faixa fica sempre reservada: nada pula quando a dica aparece. */
+[data-testid="stTextArea"] {padding-bottom: 1.25rem;}
+[data-testid="stTextArea"] [data-testid="InputInstructions"] {bottom: 0;}
 </style>"""
 
 

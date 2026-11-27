@@ -34,7 +34,9 @@ RULES = [
     "Edite os arquivos direto no disco, nos caminhos listados em Onde editar; os caminhos do pacote são "
     "relativos ao workspace. O Marga só enxerga mudanças nesses caminhos: não gere .zip, não edite outra cópia "
     "do projeto (Overleaf, Downloads, um clone) e não renomeie nem mova arquivos.",
-    "Mude só o necessário para atender cada comentário: não reformate, não reordene e não reescreva o resto.",
+    "Mude só o necessário para atender cada comentário: não reformate, não reordene e não reescreva o resto. O "
+    "Marga compara a versão nova com a anterior e aponta ao usuário toda alteração fora das linhas dos comentários "
+    "e dos trechos ligados por links.",
     "Os números de linha valem para a versão indicada, que é exatamente o que está no disco agora. Se as "
     "linhas mudarem enquanto você edita, localize o trecho pela citação exata.",
     "Tipos: corrigir, reescrever, remover e inserir pedem edição; pergunta pede uma resposta na nota, sem "
@@ -93,7 +95,9 @@ Este workspace é revisado com o Marga. Cada rodada de revisão fica em `.marga/
 A rodada mais recente também está em `.marga/rounds/latest.md` e `.marga/rounds/latest.json`.
 
 Fluxo: leia o pacote, edite os arquivos direto no disco e escreva o `response.json`. O Marga detecta a
-mudança no disco, registra a nova versão, re-ancora os comentários e compara com a versão anterior.
+mudança no disco, registra a nova versão, re-ancora os comentários e compara com a versão anterior. Toda
+alteração fora das linhas dos comentários (e dos trechos ligados por links) aparece para o usuário como uma
+alteração sem pedido: mude só o que os comentários pedem.
 
 Onde editar: nos caminhos da seção *Onde editar* do pacote, dentro deste workspace. Projetos importados de um
 `.zip` (do Overleaf, por exemplo) viram uma cópia em `uploads/<nome>/`, e é essa cópia que se edita. Não gere

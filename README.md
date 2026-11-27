@@ -135,6 +135,7 @@ flowchart LR
    - No texto de um PDF avulso, a mesma lista filtra o trecho mostrado. Acima de 120 páginas, o texto aparece por seção ou em blocos de 20 páginas.
    - No fonte LaTeX, **§ Ir para seção** abre o arquivo na linha do título e leva junto o PDF da outra coluna. No Word e no HTML, a mesma lista vai para cada título; no PowerPoint, **§ Ir para slide** vai para cada slide.
    - As seções vêm do fonte LaTeX (posicionado pelo SyncTeX), dos marcadores do PDF ou, em PDFs sem marcadores, de títulos detectados pela tipografia.
+   - **Anotações de cada documento**, sob a coluna dele: **Abertas · Todas** filtra a lista, e **No texto · Por id** a ordena pela posição dos trechos nos arquivos (o padrão) ou pelo número (c1, c2… e depois as marcas).
 3. **Selecione e comente.**
    - Fonte: arraste para selecionar, ou clique/arraste nos números de linha (shift estende).
    - PDF: o clique leva à linha do fonte; arrastar um retângulo seleciona o trecho (SyncTeX + texto do PDF). Dentro de uma figura, a seleção vai para o `\includegraphics` dela, e as marcas ficam sempre dentro da página.
@@ -142,8 +143,14 @@ flowchart LR
 4. **Ligue trechos entre arquivos** em **↔ Linkar trechos**: origem → relação → destino. Uma seleção usada num link vira uma marca (`mN`), e a aba *Links* mostra o grafo.
 5. **Exporte a rodada** na aba *Rodadas*. O Marga grava `.marga/rounds/NNN/` e mostra um prompt curto para colar no agente.
 6. **O agente edita os arquivos** direto no disco, nos caminhos da seção *Onde editar* do pacote, e escreve `.marga/rounds/NNN/response.json`, com uma nota por comentário. Num projeto do Overleaf, isso é a cópia em `uploads/`; se a revisão foi aplicada no próprio Overleaf, traga o `.zip` novo como nova versão (veja abaixo).
-7. **Registre a nova versão.** A barra lateral avisa quando os arquivos mudam no disco (**Registrar vN+1**). Os comentários abertos são reposicionados e as notas do agente entram no histórico.
-8. **Compare** na aba *Comparar versões*: antes × depois de cada comentário, nota do agente e diff por arquivo. Resolva, descarte ou reabra com uma nova instrução, e exporte a próxima rodada.
+7. **Registre a nova versão.** A barra lateral avisa quando os arquivos mudam no disco (**Registrar vN+1**). Os comentários abertos são reposicionados, as notas do agente entram no histórico e o aviso diz quantas alterações sem pedido o agente fez.
+8. **Compare** na aba *Comparar versões*: alterações sem pedido, antes × depois de cada comentário, nota do agente e diff por arquivo. Resolva, descarte ou reabra com uma nova instrução, e exporte a próxima rodada.
+   - **⚠️ Alterações sem pedido:** o Marga aponta o que o agente mudou fora das linhas dos comentários da rodada e dos trechos ligados por links: uma alucinação, uma frase reescrita sem ninguém pedir, um trecho protegido por *não alterar*. Cada alerta mostra a versão anterior e a nova com as palavras alteradas destacadas, e diz o motivo.
+     - **✓ Aceitar** mantém a alteração.
+     - **↩️ Pedir para refazer** cria um comentário na versão atual, que entra na próxima rodada. Ele já vem preenchido para voltar ao texto anterior, que vai como sugestão, e você pode editá-lo antes de salvar.
+     - **🚫 Ignorar** fecha o alerta (só formatação, um falso positivo), e **↺ Reabrir** desfaz qualquer decisão.
+     - A linha inteira de um comentário conta como pedida; reformatar um parágrafo não gera alerta; só as versões que respondem a uma rodada são verificadas. No *Diff por arquivo*, as linhas com alerta pendente ganham uma borda âmbar.
+   - Para ver o documento inteiro, use **🖼️ Abrir lado a lado na Revisão**, com uma versão em cada coluna. Ali, o **📍 Ir** de um comentário mantém as duas versões e leva cada coluna ao trecho dele naquela versão. Um comentário criado na versão nova aparece na antiga no mesmo trecho, se ele existir lá.
 
 <details>
 <summary>📦 Projetos do Overleaf (.zip)</summary>
@@ -259,6 +266,7 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 ├── marga.json                   documentos, contadores e ajustes
 ├── objects/                     conteúdo de cada versão (e o texto extraído de Word, PowerPoint e HTML), por sha256
 ├── docs/A/versions.json         versões de cada documento
+├── docs/A/unrequested.json      alterações sem pedido de cada versão que responde a uma rodada, com as suas decisões
 ├── annotations.json             comentários (cN) e marcas (mN)
 ├── links.json                   links (LN)
 ├── rounds/NNN/                  round.json, bundle.{md,json,html} e response.json

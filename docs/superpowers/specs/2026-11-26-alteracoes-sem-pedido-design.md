@@ -1,7 +1,7 @@
 # Alterações sem pedido · design
 
 - **Data:** 2026-11-26
-- **Status:** aprovado, a implementar
+- **Status:** aprovado e implementado
 - **Base:** [design v1](2026-11-22-marga-design.md), com Word, PowerPoint e HTML da `feat/word-powerpoint-html`
 
 ## 1. Objetivo
@@ -50,7 +50,9 @@ Uma anotação pode ter dois papéis: um `nao_alterar` que é ponta de um link d
 **Cobertura.**
 
 - Troca ou remoção (trecho não vazio na vN): é pedida se **todas** as linhas da vN que o trecho toca são pedidas.
-- Inserção (trecho vazio na vN): é pedida se o intervalo entre o token anterior e o seguinte da vN toca uma linha pedida. Esse intervalo atravessa as linhas em branco, então um parágrafo inserido depois do trecho de um *inserir* é pedido.
+- Inserção (trecho vazio na vN): é pedida se se prende a uma linha pedida.
+  - Texto inserido na mesma linha de uma palavra que já existia se prende a essa linha: uma palavra acrescentada no fim de um título é mudança do título, mesmo com um parágrafo pedido logo abaixo.
+  - Texto em linhas próprias se prende às linhas vizinhas, atravessando as linhas em branco: um parágrafo inserido depois do trecho de um *inserir* é pedido.
 - Protegido: uma mudança cujo trecho na vN cruza um trecho protegido (uma inserção, estritamente dentro dele) vira alerta `protegido`, mesmo numa linha pedida.
 
 **Agrupamento.** Mudanças não pedidas seguidas, do mesmo tipo de alerta, sem mudança pedida entre elas e em linhas da vN iguais ou vizinhas viram um alerta. O alerta vai do início da primeira ao fim da última, nos dois lados. Os alertas são numerados (1, 2…) na ordem dos arquivos e das posições na vN.
@@ -68,6 +70,7 @@ Uma anotação pode ter dois papéis: um `nao_alterar` que é ponta de um link d
 |---|---|
 | trecho protegido | "trecho protegido por c4 (não alterar)" |
 | a mudança toca linhas pedidas e não pedidas | "vai além das linhas de c3" |
+| na linha de um *não alterar*, sem tocar o trecho exato | "perto do trecho protegido por c4" |
 | na região de uma pergunta | "c5 era uma pergunta: responder sem editar" |
 | na região de uma nota ou marca | "c6 é só contexto (nota)", "m2 é só uma marca" |
 | nenhuma anotação por perto | "fora dos comentários da rodada R" |

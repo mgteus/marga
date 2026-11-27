@@ -371,9 +371,9 @@ def _source_panel(ws: Workspace, v: View, show_diff: bool, show_threads: bool) -
         "height": SOURCE_HEIGHT,
     }
     data["rev"] = _rev(data)
-    focus = ss.get("focus")
-    if focus and focus["doc"] == doc.id and focus["file"] == file:
-        data["focus"] = {"line": focus["line"], "nonce": focus["nonce"]}
+    focus = state.focus_in(doc.id, v.n)
+    if focus and focus[0] == file:
+        data["focus"] = {"line": focus[1], "nonce": focus[2]}
     res = source_view(data, key=f"src_{v.side}_{doc.id}_{v.n}_{file}")
 
     added = sum(1 for r in rows if r.kind == "add")
@@ -473,10 +473,10 @@ def _pdf_range(ws: Workspace, v: View, rows: list[DiffRow]) -> tuple[list[DiffRo
     key = f"{v.side}_rng_{v.doc.id}_{v.n}"
     if ss.get(key) not in options:
         ss[key] = next(iter(options))
-    focus, seen = ss.get("focus"), f"_{key}_focus"
-    if focus and focus["doc"] == v.doc.id and focus["nonce"] != ss.get(seen):
-        ss[seen] = focus["nonce"]  # foco novo (PDF, 📍 Ir): mostra o trecho que contém a linha
-        page = pt.page_of_line(focus["line"])
+    focus, seen = state.focus_in(v.doc.id, v.n), f"_{key}_focus"
+    if focus and focus[2] != ss.get(seen):
+        ss[seen] = focus[2]  # foco novo (PDF, 📍 Ir): mostra o trecho que contém a linha
+        page = pt.page_of_line(focus[1])
         _, a, b = options[ss[key]]
         fits = [k for k, (_, a2, b2) in options.items() if page and a2 <= page <= b2]
         if page and not a <= page <= b and fits:
@@ -1067,27 +1067,39 @@ def page_of_anchor(ws: Workspace, doc: Document, anchor: Anchor) -> int | None:
 
 
 def go_to(ws: Workspace, ann_id: str) -> None:
-    """Mostra a anotação: escolhe arquivo, versão e página nas colunas que exibem o documento."""
+    """Mostra a anotação: escolhe arquivo, versão e página nas colunas que exibem o documento.
+
+    Se a anotação existe numa das versões na tela, cada coluna fica na versão dela e vai ao trecho nessa versão:
+    com a v2 e a v3 lado a lado, o comentário aparece antes e depois do agente. Uma coluna cuja versão não tem o
+    trecho fica como está. Se nenhuma versão na tela tem a anotação, as colunas vão para a versão atual dela.
+    """
     ss = st.session_state
     ann = ws.get_annotation(ann_id)
     if ann is None:
         return
     doc = ws.get_doc(ann.doc)
-    an = ann.anchor
-    state.set_focus(ann.doc, an.file, an.start_line, ann_id)
-    showing = [side for side in visible_sides() if ss.get(f"{side}_doc") == ann.doc]
-    if not showing:
+    shown = {side: ss.get(f"{side}_ver_{ann.doc}") for side in visible_sides() if ss.get(f"{side}_doc") == ann.doc}
+    if not shown:
         state.request("L_doc", ann.doc)
         state.request(f"L_mode_{ann.doc}", "Fonte")
-        showing = ["L"]
-    page = None
-    for side in showing:
+    if any(isinstance(n, int) and ann.anchor_at(n) is not None for n in shown.values()):
+        where = {side: actions.anchor_in_version(ws, ann, n) for side, n in shown.items()}
+    else:
+        where = {side: ann.anchor for side in shown or ("L",)}
+    at: dict[int, tuple[str, int]] = {}
+    pages: dict[int, int | None] = {}
+    for side, an in where.items():
+        if an is None:
+            continue
+        at[an.version] = (an.file, an.start_line)
         state.request(f"{side}_ver_{ann.doc}", an.version)
         state.request(f"{side}_file_{ann.doc}_{an.version}", an.file)
         if ss.get(f"{side}_mode_{ann.doc}") in ("PDF", "Slides"):
-            page = page or page_of_anchor(ws, doc, an)
-            if page:
-                state.request(f"{side}_page_{ann.doc}_{an.version}", page)
+            if an.version not in pages:
+                pages[an.version] = page_of_anchor(ws, doc, an)
+            if pages[an.version]:
+                state.request(f"{side}_page_{ann.doc}_{an.version}", pages[an.version])
+    state.set_focus(ann.doc, ann.anchor.file, ann.anchor.start_line, ann_id, at=at)
 
 
 def _send_reply(ws: Workspace, ann_id: str, key: str) -> None:
@@ -1098,22 +1110,41 @@ def _send_reply(ws: Workspace, ann_id: str, key: str) -> None:
         state.flash("ok", f"{ann_id}: instrução adicionada (comentário aberto)")
 
 
+ORDERS = {"texto": "No texto", "id": "Por id"}
+
+
+def _by_id(a: Annotation) -> tuple[str, int]:
+    """c1, c2… c30 e depois as marcas m1, m2…"""
+    return a.id[:1], int(a.id[1:]) if a.id[1:].isdigit() else 0
+
+
+def _by_position(a: Annotation) -> tuple:
+    """Ordem em que os trechos aparecem: arquivo, linha e coluna."""
+    return a.anchor.file, a.anchor.start_line, a.anchor.start_col, _by_id(a)
+
+
 def _annotation_list(ws: Workspace, v: View) -> None:
     ss = st.session_state
     doc = v.doc
     anns = ws.annotations(doc.id)
     if not anns:
         return
-    key = f"flt_{v.side}_{doc.id}"
+    key, key_ord = f"flt_{v.side}_{doc.id}", f"ord_{v.side}_{doc.id}"
     if ss.get(key) not in ("Abertas", "Todas"):
         ss[key] = "Abertas"
-    head = st.columns([3, 2], vertical_alignment="center")
+    if ss.get(key_ord) not in ORDERS:
+        ss[key_ord] = "texto"
     open_count = sum(a.is_open for a in anns)
-    head[0].markdown(f"**Anotações de {doc.id}** · {open_count} aberta(s) de {len(anns)}")
-    flt = head[1].segmented_control("Filtro", ["Abertas", "Todas"], key=key, label_visibility="collapsed") or "Abertas"
+    head = st.container(horizontal=True, vertical_alignment="center")  # numa coluna estreita, os controles descem
+    head.markdown(f"**Anotações de {doc.id}** · {open_count} aberta(s) de {len(anns)}", width="content")
+    flt = head.segmented_control("Filtro", ["Abertas", "Todas"], key=key, label_visibility="collapsed") or "Abertas"
+    order = head.segmented_control(
+        "Ordem", list(ORDERS), key=key_ord, format_func=ORDERS.get, required=True, label_visibility="collapsed",
+        help="No texto: na ordem em que os trechos aparecem nos arquivos. Por id: c1, c2… e depois as marcas.",
+    ) or "texto"
     links = ws.links()
     by_id = {a.id: a for a in ws.annotations()}
-    for a in sorted(anns, key=lambda x: (x.anchor.file, x.anchor.start_line, x.id)):
+    for a in sorted(anns, key=_by_id if order == "id" else _by_position):
         if flt == "Abertas" and not a.is_open:
             continue
         icon = "🏷️" if a.is_mark else {"aberto": "💬", "resolvido": "✅", "descartado": "🚫"}.get(a.status, "💬")
@@ -1160,7 +1191,9 @@ def _annotation_detail(ws: Workspace, a: Annotation, links, by_id: dict[str, Ann
 
     k = f"{v.side}_{a.id}"
     row = st.columns(4)
-    row[0].button("📍 Ir", key=f"go_{k}", on_click=go_to, args=(ws, a.id), help="Mostrar no fonte e no PDF")
+    row[0].button("📍 Ir", key=f"go_{k}", on_click=go_to, args=(ws, a.id),
+                  help="Mostrar o trecho no fonte e no PDF. Com duas versões lado a lado, cada coluna fica na sua "
+                       "e mostra o trecho nela.")
     if a.is_open:
         row[1].button("✓ Resolver", key=f"res_{k}", on_click=_set_status, args=(ws, a.id, "resolvido"))
         row[2].button("🚫 Descartar", key=f"dis_{k}", on_click=_set_status, args=(ws, a.id, "descartado"))

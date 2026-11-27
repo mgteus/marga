@@ -41,6 +41,7 @@ marga/
 │   ├── textmap.py      offset ↔ (linha, coluna), texto LaTeX normalizado, busca de frase
 │   ├── anchors.py      âncoras a partir de seleções; re-ancoragem n → n+1
 │   ├── diffing.py      diff para as views, diff unificado, estatísticas
+│   ├── unrequested.py  alterações sem pedido: o que o agente mudou fora das linhas pedidas na rodada, e as decisões
 │   ├── latex.py        .tex principal, motor, latexmk em paralelo, leitura do log
 │   ├── synctex.py      CLI synctex: PDF → fonte e fonte → PDF
 │   ├── pdf.py          render de página, palavras numa região, texto de PDF avulso
@@ -99,7 +100,7 @@ Cria `.venv/` e instala exatamente o que está no `uv.lock` (Streamlit 1.67.0, P
 uv run pytest -q
 ```
 
-Esperado: `75 passed, 2 skipped` em cerca de 30 s, com TeX Live e LibreOffice (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
+Esperado: `97 passed, 2 skipped` em cerca de 30 s, com TeX Live e LibreOffice (os dois pulados são os testes opcionais com arquivos reais). Os `DeprecationWarning` sobre `SwigPyPacked`/`swigvarlink` vêm do PyMuPDF e podem ser ignorados.
 
 ## Tutorial: rodando o servidor pela primeira vez
 
@@ -157,17 +158,19 @@ Abra <http://localhost:8501>. Cada linha abaixo foi conferida no app:
 | 5 | Escrever um pedido e salvar | Toast "c1 criado em artigo/main.tex:15"; o comentário aparece em *Anotações de A* |
 | 6 | Aba **Rodadas** → **📦 Exportar rodada 1** | "Rodada 1 · … · ⏳ aguardando o agente", o prompt para o agente e os arquivos em `.marga/rounds/001/` |
 | 7 | Simular o agente (comando abaixo) | Em até 4 s, a barra lateral mostra "⚠️ 1 arquivo(s) mudaram no disco desde a v1" e o botão **Registrar v2** |
-| 8 | **Registrar v2** | Toast "A v2 registrada · resposta da rodada 1 · 1 alterado · 1 nota(s) do agente importada(s)"; em *Rodadas*, "✅ resposta importada" |
-| 9 | Aba **Comparar versões** (A, v1 → v2) | c1 antes × depois, a nota do agente e o diff de `artigo/main.tex` |
+| 8 | **Registrar v2** | Toast "A v2 registrada · resposta da rodada 1 · 1 alterado · 1 nota(s) do agente importada(s) · ⚠️ 1 alteração(ões) sem pedido (veja em Comparar versões)"; em *Rodadas*, "✅ resposta importada" |
+| 9 | Aba **Comparar versões** (A, v1 → v2) | Em *⚠️ Alterações sem pedido*, o alerta 1 (`artigo/main.tex:16`, 35% → 40%) com o motivo "fora dos comentários da rodada 1"; c1 antes × depois, a nota do agente e o diff de `artigo/main.tex`, com a linha 16 de borda âmbar |
+| 10 | No alerta 1, **↩️ Pedir para refazer** → **💬 Criar comentário** | Toast "c2 criado em artigo/main.tex:16: entra na próxima rodada"; o alerta vai para "1 decidido(s) na v2", como "virou c2" |
 
-Para simular o agente no passo 7:
+Para simular o agente no passo 7 (ele faz o pedido de c1 na linha 15 e, sem pedido, troca 35% por 40% na linha 16):
 
 ```bash
 python3 - "$DEMO" <<'EOF'
 import json, pathlib, sys
 ws = pathlib.Path(sys.argv[1])
 tex = ws / "artigo/main.tex"
-tex.write_text(tex.read_text(encoding="utf-8").replace("entre 2019 e 2021.", "entre março e junho de 2021."), encoding="utf-8")
+text = tex.read_text(encoding="utf-8")
+tex.write_text(text.replace("entre 2019 e 2021.", "entre março e junho de 2021.").replace("35\\%", "40\\%"), encoding="utf-8")
 (ws / ".marga/rounds/001/response.json").write_text(json.dumps({
     "schema": "marga.response/v1", "round": 1, "resumo": "Ajustei o período no resumo.",
     "comments": {"c1": {"status": "feito", "nota": "troquei 'entre 2019 e 2021' por 'entre março e junho de 2021'"}},
@@ -216,6 +219,7 @@ O `-sTCP:LISTEN` garante que só o servidor seja encerrado, e não um navegador 
 
 - **O núcleo não importa Streamlit.** Nada em `marga/core/` importa `streamlit`; é isso que o deixa testável. A UI importa o núcleo, nunca o contrário.
 - **Regra de negócio fica no núcleo.** Operação nova vai para `core/actions.py` (ou para o módulo certo do núcleo), com teste em pytest; a UI só chama e mostra.
+- **Alterações sem pedido** (`core/unrequested.py`): `register_version` verifica cada versão que responde a uma rodada e grava os alertas em `.marga/docs/<doc>/unrequested.json`, com as decisões do usuário; uma versão registrada antes do recurso é verificada na primeira comparação. Mudar a regra não refaz verificações gravadas. A detecção (`detect`) é pura, sobre textos e regiões: teste-a direto, como em `tests/test_unrequested.py`. "Pedir para refazer" só cria um comentário (`comment_unrequested`); o Marga continua sem editar os documentos.
 - **Escrita em `.marga/` só pelos helpers.** Use `write_json`/`write_text`/`write_bytes` de `workspace.py` (arquivo temporário + rename) e faça ler-modificar-gravar dentro de `_LOCK`. JSON corrompido levanta `MargaError` e nunca é sobrescrito; mantenha assim.
 - **Erros esperados são `MargaError`**, com mensagem em português pronta para o usuário. A UI captura e mostra com `st.error`.
 - **O Marga nunca edita os documentos do usuário.** Ele só escreve em `.marga/` e em `uploads/` (envios, cópias do disco e `.zip` extraídos em `uploads/<nome>/`; nomes repetidos ganham `-2`, `-3`…). Qualquer recurso que altere os arquivos do usuário é mudança de design: pergunte antes.
@@ -243,6 +247,7 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 |---|---|
 | `tests/test_textmap.py` | offsets ↔ linha/coluna com Unicode, normalização de LaTeX, busca de frase exata e aproximada, linhas de diff |
 | `tests/test_versions_anchors.py` | versões, arquivos latin-1, re-ancoragem (inalterado, deslocado, alterado, movido, órfão), links |
+| `tests/test_unrequested.py` | alterações sem pedido: linha pedida, parágrafo reformatado, bloco com linha pedida e não pedida, inserção (na mesma linha e em linhas próprias, depois de um *inserir*), *não alterar* numa linha pedida, motivos (pergunta, nota, marca, além do pedido), agrupamento, remoção pura, arquivos novos e apagados, rascunhos do "Pedir para refazer"; no workspace: registro com a contagem, verificação gravada e tardia, versão manual, links (*propagar* × *ver também*), aceitar/ignorar/reabrir, pedir para refazer na versão atual, depois de uma versão nova, com o disco alterado e com o trecho mudado de novo |
 | `tests/test_export.py` | pacote da rodada, onde editar (caminhos completos no pacote e no prompt), exportação bloqueada com disco alterado, importação da resposta, resposta inválida |
 | `tests/test_latex_pdf.py` | compilação paralela, erro apontando a linha do subarquivo, versão antiga via snapshot, ida e volta do SyncTeX, texto de PDF avulso |
 | `tests/test_figures.py` | caixas do SyncTeX trocadas pela área real das imagens, recorte das marcas à página, clique dentro de uma imagem → linha do `\includegraphics` |
@@ -251,7 +256,7 @@ Rode `uv run pytest -q` antes de dar qualquer mudança por concluída.
 | `tests/test_outline.py` | títulos pela tipografia (folha de rosto, sumário e notas ficam de fora), marcadores, seções do fonte (`\include` comentado, `\section*`, apêndice) e páginas de cada seção |
 | `tests/test_formats.py` | texto de Word (títulos, listas, tabelas, revisões, campos, notas de rodapé, caixas de texto), PowerPoint (ordem da apresentação, grupos, tabelas, notas, slide oculto) e HTML (estrutura e linhas do arquivo); erros legíveis; o agente editando `.docx`/`.pptx` com python-docx/python-pptx e a re-ancoragem (com o slide); links entre todos os tipos no pacote; arquivos de trava `~$` e envios |
 | `tests/test_slides.py` | leitor de slides: cada parágrafo desenhado aponta para a linha certa do texto, fundo, imagens com transparência, formas livres (cor, degradê e imagem recortada), `grpFill`, tabelas com estilo, pesos no nome da fonte, gráfico, forma oculta, escape de HTML; chaves de versões antigas; PDF pelo LibreOffice (slides ocultos, cache, erro), pulado sem ele; PDF pelo PowerPoint com um `osascript` de mentira (cópia sem slides ocultos, conversor padrão); comentário → forma, parágrafo e caracteres no `.pptx` (conferidos com python-pptx, com grupo, tabela, notas e quebra de linha); clique no PDF numa frase repetida cai na forma clicada, e a marca só nela |
-| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); coluna da direita desligada (anotações ao lado do documento, tamanho do PDF) e religada com o mesmo documento; lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente; Word, PowerPoint e HTML lado a lado, com links e "ir para slide"; PowerPoint nos modos Slides e PDF |
+| `tests/test_app.py` | smoke test: o `AppTest` renderiza todas as abas sem exceção (usa `MARGA_WORKSPACE`); coluna da direita desligada (anotações ao lado do documento, tamanho do PDF) e religada com o mesmo documento; 📍 Ir com duas versões lado a lado (cada coluna fica na sua e vai ao trecho nela); lista de seções no PDF, filtro do texto do PDF e "ir para seção" no fonte; `.zip` do disco como nova versão e troca para um workspace recente; Word, PowerPoint e HTML lado a lado, com links e "ir para slide"; PowerPoint nos modos Slides e PDF; alterações sem pedido em *Comparar versões* (cartões, aceitar, pedir para refazer, métrica); lista de anotações na ordem do texto ou por id |
 
 - As fixtures `demo_ws` e `text_ws` (em `tests/conftest.py`) criam workspaces em `tmp_path`. Testes novos nunca devem escrever em `examples/demo/`.
 - A fixture automática `isolated_config` aponta `MARGA_CONFIG_DIR` para `tmp_path`: nenhum teste mexe nos workspaces recentes reais. A `no_powerpoint` esconde o PowerPoint instalado: nenhum teste o abre.

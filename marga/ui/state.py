@@ -41,7 +41,7 @@ def apply_pending() -> None:
 
 # Widgets cujo valor deve sobreviver à troca de aba (o Streamlit apaga o estado de widgets não desenhados).
 _KEEP = re.compile(
-    r"^(?:[LR]_doc|[LR]_(?:mode|ver)_[^_]+|[LR]_(?:file|page|rng)_[^_]+_\d+|show_diff|show_threads|show_right|[LR]_zoom|flt_[LR]_[^_]+"
+    r"^(?:[LR]_doc|[LR]_(?:mode|ver)_[^_]+|[LR]_(?:file|page|rng)_[^_]+_\d+|show_diff|show_threads|show_right|[LR]_zoom|(?:flt|ord)_[LR]_[^_]+"
     r"|cmp_doc|cmp_(?:from|to)_[^_]+|lk_(?:src|dst|rel|note)|instr|incl_src)$"
 )
 
@@ -96,7 +96,26 @@ def clear_selection(doc_id: str) -> None:
 
 
 # ------------------------------------------------------------------ foco
-def set_focus(doc_id: str, file: str, line: int, ann_id: str | None = None) -> None:
-    st.session_state["focus"] = {"doc": doc_id, "file": file, "line": int(line), "nonce": new_nonce()}
+def set_focus(doc_id: str, file: str, line: int, ann_id: str | None = None,
+              at: dict[int, tuple[str, int]] | None = None) -> None:
+    """Leva as colunas do documento a um arquivo e linha. ``at`` dá o lugar em cada versão (📍 Ir com versões
+    diferentes lado a lado); com ele, uma versão que não está em ``at`` não se move."""
+    st.session_state["focus"] = {"doc": doc_id, "file": file, "line": int(line), "at": at or {},
+                                 "nonce": new_nonce()}
     if ann_id is not None:
         st.session_state["focus_ann"] = ann_id
+
+
+def focus_in(doc_id: str, version: int) -> tuple[str, int, str] | None:
+    """(arquivo, linha, nonce) do foco numa versão do documento, ou ``None``."""
+    focus = st.session_state.get("focus")
+    if not focus or focus["doc"] != doc_id:
+        return None
+    at = focus.get("at")
+    if at:
+        if version not in at:
+            return None
+        file, line = at[version]
+    else:
+        file, line = focus["file"], focus["line"]
+    return file, int(line), focus["nonce"]

@@ -60,6 +60,20 @@ AGENT_STATUSES: dict[str, str] = {
 
 VERSION_ORIGINS: dict[str, str] = {"inicial": "inicial", "agente": "agente", "manual": "manual"}
 
+# Alterações sem pedido: o que o agente mudou fora das linhas dos comentários da rodada (unrequested.py).
+UNREQUESTED_KINDS: dict[str, str] = {
+    "sem_pedido": "alteração sem pedido",
+    "protegido": "trecho protegido alterado",
+    "arquivo_novo": "arquivo criado sem pedido",
+    "arquivo_removido": "arquivo apagado sem pedido",
+}
+UNREQUESTED_STATUSES: dict[str, str] = {
+    "pendente": "pendente",
+    "aceita": "aceita",
+    "comentada": "virou comentário",
+    "ignorada": "ignorada",
+}
+
 
 def now_iso() -> str:
     return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -253,6 +267,79 @@ class Document:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Document:
+        return _from_dict(cls, data)
+
+
+@dataclass
+class UnrequestedChange:
+    """Alerta de alteração sem pedido: um trecho que mudou da vN para a vN+1 fora das linhas pedidas na rodada."""
+
+    n: int  # número do alerta na versão verificada (1, 2…)
+    kind: str  # sem_pedido | protegido | arquivo_novo | arquivo_removido
+    file: str
+    old: Anchor | None  # trecho na vN (citação vazia: só inserção; None: arquivo novo)
+    new: Anchor | None  # trecho na vN+1 (None: arquivo removido)
+    reason: str
+    related: list[str] = field(default_factory=list)  # anotações da rodada que tocam o trecho
+    status: str = "pendente"  # pendente | aceita | comentada | ignorada
+    comment: str | None = None  # o comentário criado por "Pedir para refazer"
+    decided_at: str | None = None
+
+    @property
+    def is_pending(self) -> bool:
+        return self.status == "pendente"
+
+    @property
+    def kind_label(self) -> str:
+        return UNREQUESTED_KINDS.get(self.kind, self.kind)
+
+    @property
+    def status_label(self) -> str:
+        if self.status == "comentada" and self.comment:
+            return f"virou {self.comment}"
+        return UNREQUESTED_STATUSES.get(self.status, self.status)
+
+    @property
+    def where(self) -> Anchor:
+        """O trecho a mostrar: o da versão nova, ou o da anterior quando o arquivo foi apagado."""
+        return self.new or self.old  # type: ignore[return-value]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UnrequestedChange:
+        data = dict(data)
+        for side in ("old", "new"):
+            if data.get(side) is not None:
+                data[side] = Anchor.from_dict(data[side])
+        return _from_dict(cls, data)
+
+
+@dataclass
+class UnrequestedCheck:
+    """Verificação de uma versão que responde a uma rodada: os alertas da vN para a vN+1."""
+
+    version: int  # vN+1
+    previous: int  # vN
+    round: int
+    checked_at: str = field(default_factory=now_iso)
+    items: list[UnrequestedChange] = field(default_factory=list)
+
+    @property
+    def pending(self) -> list[UnrequestedChange]:
+        return [item for item in self.items if item.is_pending]
+
+    def get(self, n: int) -> UnrequestedChange | None:
+        return next((item for item in self.items if item.n == n), None)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UnrequestedCheck:
+        data = dict(data)
+        data["items"] = [UnrequestedChange.from_dict(item) for item in data.get("items", [])]
         return _from_dict(cls, data)
 
 

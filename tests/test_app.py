@@ -6,8 +6,8 @@ from pathlib import Path
 import pymupdf
 from streamlit.testing.v1 import AppTest
 
-from marga.core import actions, export, folders
-from marga.core.anchors import anchor_from_offsets
+from marga.core import actions, export, folders, unrequested
+from marga.core.anchors import anchor_from_offsets, lines_anchor
 from marga.core.versions import latest_version, load_versions, version_text
 from marga.core.workspace import Workspace
 
@@ -60,6 +60,28 @@ def test_right_column_turns_off_and_comes_back_as_it_was(demo_ws, monkeypatch):
     at.toggle(key="show_right").set_value(True).run()
     assert doc_pickers() == ["L_doc", "R_doc"] and at.selectbox(key="R_doc").value == "A"
     assert at.selectbox(key="L_zoom").value == "page"
+
+
+def test_go_to_keeps_two_versions_side_by_side(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "notas.md")
+    text = version_text(demo_ws, doc, latest_version(demo_ws, doc.id), "notas.md")
+    c1 = actions.create_annotation(demo_ws, doc.id, lines_anchor(text, "notas.md", 1, 4, 4), "corrigir", "na v1")
+    notas = demo_ws.root / "notas.md"
+    notas.write_text("Linha nova.\n\n" + notas.read_text(encoding="utf-8"), encoding="utf-8")
+    actions.register_version(demo_ws, doc.id)  # o trecho do c1 desce duas linhas na v2
+    text = version_text(demo_ws, doc, latest_version(demo_ws, doc.id), "notas.md")
+    c2 = actions.create_annotation(demo_ws, doc.id, lines_anchor(text, "notas.md", 2, 7, 7), "corrigir", "na v2")
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    for key, value in {"L_doc": doc.id, "R_doc": doc.id, f"L_ver_{doc.id}": 1, f"R_ver_{doc.id}": 2}.items():
+        at.session_state[key] = value
+    at.run()
+    for ann, lines in ((c1, (4, 6)), (c2, (5, 7))):  # o c2 não existe na v1: a v1 vai ao mesmo trecho
+        at.button(key=f"go_L_{ann.id}").click().run()
+        assert not at.exception, at.exception
+        assert (at.session_state[f"L_ver_{doc.id}"], at.session_state[f"R_ver_{doc.id}"]) == (1, 2)
+        assert at.session_state["focus"]["at"] == {1: ("notas.md", lines[0]), 2: ("notas.md", lines[1])}
+
 
 def test_sections_navigate_pdf_and_filter_its_text(demo_ws, monkeypatch):
     path = demo_ws.root / "livro.pdf"
@@ -187,3 +209,52 @@ def test_powerpoint_shows_slides_and_pdf(demo_ws, monkeypatch):
     at.run()
     assert not at.exception, at.exception
     assert at.selectbox(key=f"L_sec_{doc.id}_1").value == 1  # o seletor acompanha o slide 2
+
+
+def test_compare_lists_unrequested_changes_and_decides_them(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "notas.md")
+    text = version_text(demo_ws, doc, latest_version(demo_ws, doc.id), "notas.md")
+    actions.create_annotation(demo_ws, doc.id, lines_anchor(text, "notas.md", 1, 4, 4), "corrigir", "o ano")
+    export.export_round(demo_ws, "")
+    notas = demo_ws.root / "notas.md"  # o agente muda a linha pedida (4) e, sem pedido, a 3 e a 5
+    notas.write_text(text.replace("2021", "2022").replace("(120?)", "(150)").replace("pediu", "exigiu"),
+                     encoding="utf-8")
+    assert actions.register_version(demo_ws, doc.id).unrequested == 2
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["nav"] = "Comparar versões"
+    at.run()
+    assert not at.exception, at.exception
+    assert [m.value for m in at.markdown if "· alerta" in m.value] == [
+        "⚠️ **v2 · alerta 1** · `notas.md:3` · alteração sem pedido",
+        "⚠️ **v2 · alerta 2** · `notas.md:5` · alteração sem pedido",
+    ]
+    at.button(key=f"unr_{doc.id}_2_1_ok").click().run()
+    assert not at.exception, at.exception
+    at.button(key=f"unr_{doc.id}_2_2_mk").click().run()  # Pedir para refazer, com o rascunho
+    assert not at.exception, at.exception
+    check = unrequested.get_check(demo_ws, doc.id, 2)
+    assert [i.status for i in check.items] == ["aceita", "comentada"]
+    ann = demo_ws.get_annotation(check.get(2).comment)
+    assert (ann.anchor.quote, ann.suggestion, ann.anchor.version) == ("exigiu", "pediu", 2)
+    assert at.metric[5].value == "0"
+
+
+def test_annotation_list_sorts_by_position_or_by_id(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "notas.md")
+    text = version_text(demo_ws, doc, latest_version(demo_ws, doc.id), "notas.md")
+    for line in (5, 3, 4):  # c1 na linha 5, c2 na 3, c3 na 4
+        actions.create_annotation(demo_ws, doc.id, lines_anchor(text, "notas.md", 1, line, line), "corrigir", "x")
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+    assert not at.exception, at.exception
+
+    def listed() -> list[str]:
+        return [e.label.split(" · ")[0].split()[-1] for e in at.expander if " · Corrigir · " in e.label]
+
+    assert listed() == ["c2", "c3", "c1"]  # na ordem do texto (o padrão)
+    at.session_state[f"ord_L_{doc.id}"] = "id"
+    at.run()
+    assert not at.exception, at.exception
+    assert listed() == ["c1", "c2", "c3"]

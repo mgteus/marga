@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import streamlit as st
 
-from marga.core import actions, export
+from marga.core import actions, export, unrequested
 from marga.core.diffing import changes
-from marga.core.models import AGENT_STATUSES, STATUSES, Annotation, Document
+from marga.core.models import (
+    AGENT_STATUSES,
+    COMMENT_TYPES,
+    STATUSES,
+    Anchor,
+    Annotation,
+    Document,
+    UnrequestedChange,
+    UnrequestedCheck,
+)
+from marga.core.unrequested import CommentDraft
 from marga.core.versions import get_version, load_versions, version_texts
 from marga.core.workspace import MargaError, Workspace
 from marga.ui import state
-from marga.ui.render import anchored_lines, diff_html, links_dot, short
-from marga.ui.review import go_to, view_mode
+from marga.ui.render import anchored_html, anchored_lines, diff_html, links_dot, short
+from marga.ui.review import go_to, page_of_anchor, view_mode, visible_sides
 
 
 # ================================================================= links
@@ -99,7 +109,8 @@ def render_compare(ws: Workspace) -> None:
     row = st.columns([4, 2, 2, 3], vertical_alignment="bottom")
     doc_id = row[0].selectbox("Documento", ids, key="cmp_doc", format_func=lambda i: ws.get_doc(i).label)
     doc = ws.get_doc(doc_id)
-    ns = [v.n for v in load_versions(ws, doc_id)]
+    versions = load_versions(ws, doc_id)
+    ns = [v.n for v in versions]
     if len(ns) < 2:
         st.info(f"{doc.label} só tem a v{ns[-1]}. Exporte uma rodada, deixe o agente editar os arquivos e "
                 "registre a nova versão na barra lateral.")
@@ -121,15 +132,27 @@ def render_compare(ws: Workspace) -> None:
     file_changes = changes(old, new)
     tracked = [x for x in ws.annotations(doc_id) if x.anchor_at(a) is not None]
     between = {x.id: _between_state(x, a, b) for x in tracked}
+    checks: list[UnrequestedCheck] = []
+    unchecked: list[str] = []  # versões do intervalo sem verificação, com o motivo
+    for v in versions:
+        if min(a, b) < v.n <= max(a, b):
+            check = unrequested.check_version(ws, doc, v)
+            if check is not None:
+                checks.append(check)
+            else:
+                unchecked.append(f"v{v.n} foi registrada manualmente" if v.round is None
+                                 else f"a rodada {v.round}, de que a v{v.n} é a resposta, não existe mais")
 
     origin = f"v{b} · origem: {vb.origin}" + (f" (resposta da rodada {vb.round})" if vb.round else "")
     st.caption(origin)
-    m = st.columns(5)
+    m = st.columns(6)
     m[0].metric("Arquivos alterados", len(file_changes))
     m[1].metric("Linhas +", sum(c.added for c in file_changes))
     m[2].metric("Linhas −", sum(c.removed for c in file_changes))
     m[3].metric("Trechos alterados", sum(1 for s in between.values() if s == "alterado"))
     m[4].metric("Trechos intocados", sum(1 for s in between.values() if s == "inalterado"))
+    m[5].metric("Sem pedido", sum(len(c.pending) for c in checks) if checks else "—",
+                help="Alterações fora das linhas dos comentários da rodada, ainda sem decisão.")
     if vb.round:
         try:
             info = export.get_round(ws, vb.round)
@@ -137,6 +160,8 @@ def render_compare(ws: Workspace) -> None:
             info = None
         if info and info.summary:
             st.info(f"Resumo do agente (rodada {info.n}): {info.summary}")
+
+    _unrequested_section(ws, doc, checks, unchecked, (a, b), old, new)
 
     st.markdown("#### Comentários: antes × depois")
     if not tracked:
@@ -152,10 +177,167 @@ def render_compare(ws: Workspace) -> None:
     st.markdown("#### Diff por arquivo")
     if not file_changes:
         st.caption("Nenhum arquivo mudou entre as duas versões.")
+    flag_old, flag_new = _pending_lines(checks, (a, b))
+    if flag_old or flag_new:
+        st.caption("Borda âmbar: linhas com alteração sem pedido ainda pendente.")
     for change in file_changes:
         title = f"{change.path} · {change.status} · +{change.added} −{change.removed}"
         with st.expander(title, expanded=len(file_changes) <= 2):
-            st.html(diff_html(old.get(change.path), new.get(change.path) or ""))
+            st.html(diff_html(old.get(change.path), new.get(change.path) or "",
+                              flag_old=flag_old.get(change.path, set()), flag_new=flag_new.get(change.path, set())))
+
+
+# ------------------------------------------------ alterações sem pedido
+UNREQUESTED_ICONS = {"protegido": "🛡️", "arquivo_novo": "📄", "arquivo_removido": "📄"}
+
+
+def _pending_lines(checks: list[UnrequestedCheck], pair: tuple[int, int]) -> tuple[dict, dict]:
+    """Linhas dos alertas pendentes, por arquivo, na vN e na vN+1 (só quando a comparação é esse passo)."""
+    flag_old: dict[str, set[int]] = {}
+    flag_new: dict[str, set[int]] = {}
+    for check in checks:
+        if (check.previous, check.version) != pair:
+            continue
+        for item in check.pending:
+            for anchor, flags in ((item.old, flag_old), (item.new, flag_new)):
+                if anchor is not None and anchor.quote:
+                    flags.setdefault(item.file, set()).update(range(anchor.start_line, anchor.end_line + 1))
+    return flag_old, flag_new
+
+
+def _decide(ws: Workspace, doc_id: str, version_n: int, ns: list[int], status: str) -> None:
+    try:
+        actions.decide_unrequested(ws, doc_id, version_n, ns, status)
+    except MargaError as exc:
+        state.flash("err", str(exc))
+        return
+    what = {"aceita": "aceito", "ignorada": "ignorado", "pendente": "reaberto"}[status]
+    if len(ns) == 1:
+        state.flash("ok", f"v{version_n} · alerta {ns[0]} {what}")
+    else:
+        state.flash("ok", f"v{version_n} · {len(ns)} alertas {what}s")
+
+
+def _go_alert(ws: Workspace, doc_id: str, check: UnrequestedCheck, item: UnrequestedChange) -> None:
+    """📍 Ir de um alerta: uma coluna que mostra a vN vai ao trecho antigo, uma que mostra a vN+1 vai ao novo, e
+    as outras passam para a vN+1 (ou para a vN, se o arquivo foi apagado)."""
+    ss = st.session_state
+    doc = ws.get_doc(doc_id)
+    places: dict[int, Anchor] = {}
+    if item.old is not None:
+        places[check.previous] = item.old
+    if item.new is not None:
+        places[check.version] = item.new
+    shown = {side: ss.get(f"{side}_ver_{doc_id}") for side in visible_sides() if ss.get(f"{side}_doc") == doc_id}
+    if not shown:
+        state.request("L_doc", doc_id)
+        state.request(f"L_mode_{doc_id}", "Fonte")
+        shown = {"L": None}
+    at: dict[int, tuple[str, int]] = {}
+    pages: dict[int, int | None] = {}
+    for side, n in shown.items():
+        anchor = places.get(n, item.where)
+        at[anchor.version] = (anchor.file, anchor.start_line)
+        state.request(f"{side}_ver_{doc_id}", anchor.version)
+        state.request(f"{side}_file_{doc_id}_{anchor.version}", anchor.file)
+        if ss.get(f"{side}_mode_{doc_id}") in ("PDF", "Slides"):
+            if anchor.version not in pages:
+                pages[anchor.version] = page_of_anchor(ws, doc, anchor)
+            if pages[anchor.version]:
+                state.request(f"{side}_page_{doc_id}_{anchor.version}", pages[anchor.version])
+    state.set_focus(doc_id, item.where.file, item.where.start_line, at=at)
+    state.request("nav", "Revisão")
+
+
+def _unrequested_section(ws: Workspace, doc: Document, checks: list[UnrequestedCheck], unchecked: list[str],
+                         pair: tuple[int, int], old: dict[str, str], new: dict[str, str]) -> None:
+    st.markdown("#### ⚠️ Alterações sem pedido")
+    st.caption("Trechos que o agente mudou fora das linhas dos comentários (e dos trechos ligados por links) da "
+               "rodada. Aceite, peça para refazer (vira um comentário para a próxima rodada) ou ignore.")
+    for reason in unchecked:
+        st.caption(f"Sem verificação: {reason}.")
+    for check in checks:
+        if (check.previous, check.version) == pair:
+            texts = old, new
+        else:  # comparação de várias versões: cada passo mostra os próprios textos
+            texts = (version_texts(ws, doc, get_version(ws, doc.id, check.previous)),
+                     version_texts(ws, doc, get_version(ws, doc.id, check.version)))
+        _unrequested_step(ws, doc, check, *texts, titled=len(checks) > 1)
+
+
+def _unrequested_step(ws: Workspace, doc: Document, check: UnrequestedCheck, old: dict[str, str],
+                      new: dict[str, str], titled: bool) -> None:
+    pending = check.pending
+    decided = [item for item in check.items if not item.is_pending]
+    if titled:
+        st.markdown(f"**v{check.previous} → v{check.version}** · rodada {check.round}")
+    if not check.items:
+        st.caption(f"✅ Nenhuma alteração fora das linhas comentadas na rodada {check.round} "
+                   f"(v{check.previous} → v{check.version}).")
+    elif not pending:
+        st.caption(f"✅ Nenhum alerta pendente na v{check.version}.")
+    if len(pending) >= 2:
+        st.button(f"✓ Aceitar os {len(pending)} pendentes", key=f"unr_all_{doc.id}_{check.version}",
+                  on_click=_decide, args=(ws, doc.id, check.version, [item.n for item in pending], "aceita"))
+    for item in pending:
+        _unrequested_card(ws, doc, check, item, old, new)
+    if decided:
+        with st.expander(f"{len(decided)} decidido(s) na v{check.version}"):
+            for item in decided:
+                row = st.columns([7, 1.5], vertical_alignment="center")
+                row[0].markdown(f"**alerta {item.n}** · `{item.where.location}` · {item.kind_label} · "
+                                f"*{item.status_label}*  \n{item.reason}")
+                row[1].button("↺ Reabrir", key=f"unr_{doc.id}_{check.version}_{item.n}_re", on_click=_decide,
+                              args=(ws, doc.id, check.version, [item.n], "pendente"))
+
+
+def _unrequested_card(ws: Workspace, doc: Document, check: UnrequestedCheck, item: UnrequestedChange,
+                      old: dict[str, str], new: dict[str, str]) -> None:
+    k = f"unr_{doc.id}_{check.version}_{item.n}"
+    spans_old, spans_new = unrequested.highlights(item)
+    draft = unrequested.draft_comment(check, item)
+    with st.container(border=True):
+        st.markdown(f"{UNREQUESTED_ICONS.get(item.kind, '⚠️')} **v{check.version} · alerta {item.n}** · "
+                    f"`{item.where.location}` · {item.kind_label}")
+        st.markdown(f"**Motivo:** {item.reason}")
+        cols = st.columns(2)
+        cols[0].caption(f"v{check.previous}")
+        cols[0].html(anchored_html(old.get(item.file), item.old, spans_old, "old", empty="(o arquivo não existia)"))
+        cols[1].caption(f"v{check.version}")
+        cols[1].html(anchored_html(new.get(item.file), item.new, spans_new, "new", empty="(arquivo apagado)"))
+        row = st.container(horizontal=True, vertical_alignment="center", gap="small")
+        row.button("✓ Aceitar", key=f"{k}_ok", on_click=_decide, args=(ws, doc.id, check.version, [item.n], "aceita"),
+                   help="A alteração fica.")
+        with row.popover("↩️ Pedir para refazer", disabled=draft is None,
+                         help="Cria um comentário na versão atual, já preenchido, que entra na próxima rodada."
+                         if draft else "O arquivo foi apagado: não há onde ancorar o comentário. Comente um "
+                                       "trecho da versão atual, na Revisão, pedindo para restaurá-lo."):
+            if draft is not None:
+                _redo_form(ws, doc, check, item, draft, k)
+        row.button("🚫 Ignorar", key=f"{k}_ig", on_click=_decide, args=(ws, doc.id, check.version, [item.n], "ignorada"),
+                   help="Não é problema (só formatação, um falso positivo).")
+        row.button("📍 Ir", key=f"{k}_go", on_click=_go_alert, args=(ws, doc.id, check, item),
+                   help="Mostrar o trecho na Revisão. Com a vN e a vN+1 lado a lado, cada coluna vai ao trecho na "
+                        "sua versão.")
+
+
+def _redo_form(ws: Workspace, doc: Document, check: UnrequestedCheck, item: UnrequestedChange,
+               draft: CommentDraft, k: str) -> None:
+    types = list(COMMENT_TYPES)
+    type_ = st.selectbox("Tipo", types, index=types.index(draft.type), key=f"{k}_ty", format_func=COMMENT_TYPES.get)
+    body = st.text_area("Instrução para o agente", value=draft.body, key=f"{k}_bd", height=100)
+    suggestion = None
+    if st.toggle(f"Sugerir o texto da v{check.previous}", value=draft.suggestion is not None, key=f"{k}_sgon",
+                 help="O agente aplica a sugestão literalmente, no lugar do trecho."):
+        suggestion = st.text_area("Texto substituto", value=draft.suggestion or "", key=f"{k}_sg", height=90)
+    if st.button("💬 Criar comentário", type="primary", key=f"{k}_mk"):
+        try:
+            ann = actions.comment_unrequested(ws, doc.id, check.version, item.n, type_, body, suggestion)
+        except MargaError as exc:
+            st.error(str(exc))
+        else:
+            state.flash("ok", f"{ann.id} criado em {ann.anchor.location}: entra na próxima rodada")
+            st.rerun()
 
 
 def _compare_card(ws: Workspace, ann: Annotation, a: int, b: int, old: dict, new: dict, between: str) -> None:
