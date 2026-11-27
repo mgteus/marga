@@ -15,6 +15,7 @@ from .workspace import MargaError, Workspace, read_json, write_bytes, write_json
 
 if TYPE_CHECKING:
     from .formats import Extracted
+    from .models import Anchor
 
 TEXT_EXTS = {".tex", ".bib", ".sty", ".cls", ".bst", ".md", ".markdown", ".txt", ".rst"}
 MAX_FILE_BYTES = 5_000_000
@@ -238,3 +239,32 @@ def page_of_line(ws: Workspace, doc: Document, version: Version, path: str, line
     if doc.kind == "pptx":
         return extracted_text(ws, doc, version, path).page_of_line(line)
     return None
+
+
+def pptx_places(ws: Workspace, doc: Document, version: Version) -> list[dict] | None:
+    """PowerPoint: onde fica no .pptx (forma, parágrafos) cada linha do texto extraído da versão.
+
+    Recalculado do próprio .pptx da versão e conferido com o texto guardado; ``None`` se os dois não baterem.
+    """
+    if doc.kind != "pptx" or doc.root not in version.files:
+        return None
+    text = extracted_text(ws, doc, version, doc.root).text
+    return _pptx_places(str(blob_path(ws, version.files[doc.root])), text)
+
+
+@lru_cache(maxsize=16)
+def _pptx_places(blob: str, text: str) -> list[dict] | None:
+    from .formats import pptx_detail
+
+    return pptx_detail(text, Path(blob).read_bytes())
+
+
+def pptx_targets(ws: Workspace, doc: Document, version: Version, anchor: Anchor) -> list[dict]:
+    """PowerPoint: os parágrafos do .pptx que o trecho ancorado cobre (``formats.pptx_where``); vazio se não souber."""
+    from .formats import pptx_where
+
+    lines = pptx_places(ws, doc, version)
+    if not lines:
+        return []
+    text = extracted_text(ws, doc, version, doc.root).text
+    return pptx_where(lines, text, (anchor.start_line, anchor.start_col), (anchor.end_line, anchor.end_col))

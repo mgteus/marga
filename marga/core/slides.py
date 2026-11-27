@@ -10,7 +10,8 @@
 - imagens (PNG, JPEG, GIF, SVG…), com recorte; tabelas; grupos; linhas e conectores.
 
 Gráficos, SmartArt e objetos incorporados viram uma caixa com o nome, e imagens EMF/WMF também. As fontes são
-as que o navegador tiver. Para ver o slide exatamente como no PowerPoint, use o modo PDF (LibreOffice).
+as que o navegador tiver. Para ver o slide exatamente como no PowerPoint, use o modo PDF (PowerPoint ou
+LibreOffice).
 
 Cada parágrafo de texto do slide (e cada linha de tabela) leva ``data-key`` com a mesma chave que
 ``formats.extract_pptx`` grava no texto extraído; ``bind_lines`` troca a chave pela linha do texto. É assim que
@@ -33,7 +34,7 @@ from .formats import LABELS, Extracted, a_text, extract, placeholder, shape_id
 from .ooxml import A, MC, P, R, R_ID, local
 from .workspace import MargaError
 
-RENDER_VERSION = 1  # muda quando o HTML gerado muda (a interface usa no cache)
+RENDER_VERSION = 4  # muda quando o HTML gerado muda (a interface usa no cache)
 EMU_PER_PX = 9525  # 914 400 EMU por polegada, 96 px por polegada
 PT_PX = 96 / 72
 _SVG_BLIP = "{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip"
@@ -82,11 +83,31 @@ def _n(value: float) -> str:
     return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
 
 
+_WEIGHTS = {"thin": 100, "hairline": 100, "extralight": 200, "ultralight": 200, "light": 300, "regular": 400,
+            "normal": 400, "book": 400, "medium": 500, "semibold": 600, "demibold": 600, "bold": 700,
+            "extrabold": 800, "ultrabold": 800, "black": 900, "heavy": 900}
+
+
+def _font_parts(name: str) -> tuple[str, int | None, bool]:
+    """O PowerPoint chama variações pelo nome ("Bai Jamjuree Bold"); o CSS quer a família, o peso e o itálico."""
+    words, weight, italic = (name or "").split(), None, False
+    while len(words) > 1:
+        word = words[-1].lower().replace("-", "")
+        if word in ("italic", "italics", "oblique"):
+            italic = True
+        elif word in _WEIGHTS and weight is None:
+            weight = _WEIGHTS[word]
+        else:
+            break
+        words.pop()
+    return " ".join(words), weight, italic
+
+
 def _font(name: str) -> str:
-    """Pilha de fontes CSS (aspas simples: o valor vai dentro de ``style="…"``)."""
-    safe = re.sub(r"[^\w \-.]", "", name or "")[:60]
+    """Pilha de fontes CSS (aspas simples: o valor vai dentro de ``style="…"``): o nome, a família e as reservas."""
+    names = dict.fromkeys(re.sub(r"[^\w \-.]", "", n)[:60] for n in (name or "", _font_parts(name)[0]))
     stack = "'Aptos', 'Calibri', 'Helvetica Neue', Arial, sans-serif"
-    return f"'{safe}', {stack}" if safe else stack
+    return ", ".join([f"'{n}'" for n in names if n] + [stack])
 
 
 @dataclass
@@ -585,11 +606,28 @@ class _Ctx:
             return f"{kind}, " + ", ".join(f"{c} {_n(pos)}%" for pos, c in stops) + ")"
         if name == "blipFill":
             blip = el.find(A + "blip")
-            uri = self.deck.media(part, None if blip is None else blip.get(R + "embed"))
+            svg = None if blip is None else blip.find(f".//{_SVG_BLIP}")  # há preenchimentos só em SVG, sem PNG
+            uri = next((u for c in (svg, blip) if c is not None and (u := self.deck.media(part, c.get(R + "embed")))),
+                       None)
             if uri is None:
                 return None
             tile = el.find(A + "tile") is not None
             css = f"url('{uri}') center / {'auto' if tile else '100% 100%'} {'repeat' if tile else 'no-repeat'}"
+            if not tile:  # fillRect (margens, às vezes negativas: a imagem passa da forma) e srcRect (recorte da imagem)
+                fill_rect, src = el.find(f"{A}stretch/{A}fillRect"), el.find(A + "srcRect")
+                fl, ft, fr, fb = ((_int(fill_rect.get(k)) / 100000 for k in "ltrb") if fill_rect is not None
+                                  else (0.0, 0.0, 0.0, 0.0))
+                sl, st, sr, sb = ((_int(src.get(k)) / 100000 for k in "ltrb") if src is not None else (0.0, 0.0, 0.0, 0.0))
+                if any((fl, ft, fr, fb, sl, st, sr, sb)):
+                    iw = (1 - fl - fr) / max(1 - sl - sr, 0.01)  # tamanho da imagem inteira, em frações da forma
+                    ih = (1 - ft - fb) / max(1 - st - sb, 0.01)
+                    x0, y0 = fl - sl * iw, ft - st * ih
+
+                    def pos(start: float, size: float) -> float:  # background-position em % do espaço livre
+                        return 0.0 if abs(1 - size) < 1e-6 else start / (1 - size) * 100
+
+                    css = (f"url('{uri}') {_n(pos(x0, iw))}% {_n(pos(y0, ih))}% / {_n(iw * 100)}% {_n(ih * 100)}% "
+                           "no-repeat")
             duo = None if blip is None else blip.find(A + "duotone")
             colors = [] if duo is None else [c for c in (self.color([x], ph_color) for x in duo) if c]
             if len(colors) == 2:  # duotone: a luminosidade da imagem com as duas cores do tema
@@ -767,10 +805,15 @@ class _Ctx:
 
     def _paths_svg(self, paths: list[tuple[str, bool, bool]], bg: str | None, line: tuple | None, box: tuple,
                    xf: ET.Element | None) -> str:
-        solid = None
-        if bg and bg != "transparent":
-            found = re.search(r"rgba?\([^)]*\)", bg)  # degradê: a primeira cor
-            solid = found.group(0) if found else None
+        solid = bg if bg and re.fullmatch(r"rgba?\([^)]*\)", bg) else None
+        fill_div = ""
+        if bg and bg != "transparent" and solid is None:
+            # Imagem ou degradê: o fundo de um div recortado no formato da forma (clip-path: path()).
+            d = " ".join(p for p, fills, _ in paths if fills)
+            flips = [t for attr, t in (("flipH", "scaleX(-1)"), ("flipV", "scaleY(-1)"))
+                     if xf is not None and xf.get(attr) in ("1", "true")]
+            flip_css = f";transform:{' '.join(flips)}" if flips else ""
+            fill_div = f"<div class=\"mg-fill\" style=\"background:{bg};clip-path:path(evenodd,'{d}'){flip_css}\"></div>"
         flip = []
         if xf is not None and xf.get("flipH") in ("1", "true"):
             flip.append(f"translate({_n(box[2])} 0) scale(-1 1)")
@@ -781,8 +824,8 @@ class _Ctx:
         for d, fills, strokes in paths:
             stroke = f' stroke="{line[1]}" stroke-width="{_n(line[0])}"' if strokes and line else ""
             out.append(f'<path d="{d}" fill="{solid if fills and solid else "none"}" fill-rule="evenodd"{stroke}/>')
-        return (f'<svg class="mg-geo" width="{_n(max(box[2], 1))}" height="{_n(max(box[3], 1))}" overflow="visible">'
-                f'<g{group}>{"".join(out)}</g></svg>')
+        return (f'{fill_div}<svg class="mg-geo" width="{_n(max(box[2], 1))}" height="{_n(max(box[3], 1))}" '
+                f'overflow="visible"><g{group}>{"".join(out)}</g></svg>')
 
     def connector(self, sp_pr: ET.Element | None, style: ET.Element | None, box: tuple, xf: ET.Element | None) -> str:
         line = self.line(sp_pr, style) or (1.0, "rgb(0,0,0)", "solid")
@@ -1101,6 +1144,11 @@ class _Ctx:
         css = [f"font-size:{_n(size * (0.7 if run.baseline else 1))}px"]
         if run.font:
             css.append(f"font-family:{_font(run.font)}")
+            _, weight, italic = _font_parts(run.font)
+            if weight and not run.bold:
+                css.append(f"font-weight:{weight}")
+            if italic and not run.italic:
+                css.append("font-style:italic")
         if run.bold:
             css.append("font-weight:700")
         if run.italic:

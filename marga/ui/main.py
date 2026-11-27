@@ -11,6 +11,10 @@ NAV = ["Revisão", "Links", "Comparar versões", "Rodadas"]
 
 _CSS = """<style>
 [data-testid="stMainBlockContainer"], .block-container {padding-top: 4rem; padding-bottom: 3rem;}
+/* Revisão com um documento só: a coluna da seleção e das anotações fica visível enquanto a página rola. */
+[data-testid="stColumn"]:has(.st-key-mg_side) {
+  position: sticky; top: 4rem; align-self: flex-start; max-height: calc(100vh - 5rem); overflow-y: auto;
+}
 </style>"""
 
 

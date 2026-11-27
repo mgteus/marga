@@ -33,7 +33,7 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | ⚡ **Compilação paralela** | `latexmk` compila os documentos visíveis ao mesmo tempo; um erro de compilação vira comentário com um clique. |
 | 📕 **PDFs avulsos** | PDFs sem fonte também são revisáveis, a partir do texto extraído de cada página. |
 | 📘 **Word, PowerPoint e HTML** | `.docx`, `.pptx` e `.html` viram documentos revisáveis: o Marga extrai o texto (parágrafos, títulos, tópicos de cada slide, tabelas) e compara as versões por ele. Quem edita o próprio arquivo é o agente. |
-| 📙 **Slides do PowerPoint** | Além do texto, o PowerPoint aparece desenhado slide a slide, sem converter nada (modo **Slides**), ou como PDF pelo LibreOffice (modo **PDF**). Selecione e comente direto no slide. |
+| 📙 **Slides do PowerPoint** | Além do texto, o PowerPoint aparece desenhado slide a slide, sem converter nada (modo **Slides**), ou como PDF exportado pelo próprio PowerPoint (no Mac) ou pelo LibreOffice (modo **PDF**). Selecione e comente direto no slide. |
 | 📦 **Projetos do Overleaf** | O `.zip` baixado do Overleaf vira um documento LaTeX completo: vários `.tex`, figuras e bibliografia. Um `.zip` novo do mesmo projeto vira a próxima versão do documento. |
 | 🧭 **Seções** | Em PDFs grandes, uma lista de seções leva direto a cada capítulo e filtra o texto. Ela vem do fonte LaTeX, dos marcadores do PDF ou de títulos detectados pela tipografia. |
 | 🔒 **Local e não destrutivo** | Quem edita é o agente. O Marga só escreve em `.marga/` e em `uploads/`, onde guarda as cópias dos arquivos enviados; seus arquivos de fora de `uploads/` nunca são sobrescritos. |
@@ -47,7 +47,8 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | [uv](https://docs.astral.sh/uv/) | Instala as dependências e roda o app | Sim |
 | Python 3.11+ | Runtime | Sim (se faltar, o uv baixa um) |
 | TeX Live: `latexmk`, `synctex` e `pdflatex`/`xelatex`/`lualatex` | Compilar LaTeX e ligar o clique no PDF à linha do fonte | Não. Sem ele, o resto funciona e a seleção no PDF usa busca aproximada de texto |
-| LibreOffice | Mostrar o PowerPoint como PDF (modo **PDF**) | Não. Sem ele, o PowerPoint aparece no modo **Slides**, desenhado sem conversão, e no texto |
+| Microsoft PowerPoint (Mac) | PDF dos slides exatamente como no PowerPoint (modo **PDF**); é o conversor padrão quando está instalado | Não. Sem ele, o modo PDF usa o LibreOffice |
+| LibreOffice | PDF dos slides sem o PowerPoint (Linux, ou se você escolher) | Não. Sem nenhum dos dois, o PowerPoint aparece no modo **Slides**, desenhado sem conversão, e no texto |
 
 <details>
 <summary>Como instalar o uv e o TeX Live</summary>
@@ -127,7 +128,9 @@ flowchart LR
    | **Enviar** | Um arquivo do computador: `.zip` do Overleaf, `.pdf`, `.tex`, `.docx`, `.pptx`, `.html`, `.md` ou `.txt` |
    | **Pasta** | O que já está na pasta: pastas LaTeX (o `.tex` com `\documentclass`), PDFs avulsos, Word (`.docx`), PowerPoint (`.pptx`), HTML (`.html`, `.htm`) e textos (`.md`, `.txt`, `.rst`) |
    | **Disco** | O caminho de um arquivo (ex.: `~/Downloads/projeto.zip`), sem passar pelo navegador. Melhor para arquivos grandes |
-2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, HTML e textos têm só o modo Fonte, com o texto do arquivo. O PowerPoint tem três: **Fonte** (o texto), **Slides** (desenhado sem conversão) e **PDF** (convertido pelo LibreOffice).
+2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, HTML e textos têm só o modo Fonte, com o texto do arquivo. O PowerPoint tem três: **Fonte** (o texto), **Slides** (desenhado sem conversão) e **PDF** (exportado pelo PowerPoint ou convertido pelo LibreOffice). Com o PowerPoint instalado, ele abre no PDF, que é idêntico ao slide.
+   - **Coluna da direita:** desligue o interruptor na barra de cima para revisar um documento só. Ele fica na metade esquerda, do mesmo tamanho de antes, e a seleção e as anotações dele ficam na metade direita, sempre à vista enquanto a página rola. Ao ligar de novo, a direita volta com o mesmo documento, modo e versão (e **🖼️ Abrir lado a lado**, em *Comparar versões*, religa sozinho).
+   - **Tamanho do PDF:** ao lado do número da página. **Largura** ocupa a coluna (o padrão); **Página** mostra a página inteira na altura da tela; as porcentagens são do tamanho real e, quando a página passa da coluna, ela ganha rolagem própria. O zoom do navegador não muda o tamanho do PDF, porque ele sempre acompanha a coluna.
    - **§ Seções:** no modo PDF, a lista ao lado do número da página acompanha a página atual e salta para qualquer capítulo ou seção. Digite parte do título para filtrar.
    - No texto de um PDF avulso, a mesma lista filtra o trecho mostrado. Acima de 120 páginas, o texto aparece por seção ou em blocos de 20 páginas.
    - No fonte LaTeX, **§ Ir para seção** abre o arquivo na linha do título e leva junto o PDF da outra coluna. No Word e no HTML, a mesma lista vai para cada título; no PowerPoint, **§ Ir para slide** vai para cada slide.
@@ -171,9 +174,14 @@ Cada `.docx`, `.pptx` ou `.html` é um documento próprio (B, C…). O Marga ext
 
 - Com o controle de alterações ligado, vale o texto como se todas as revisões fossem aceitas. Caixas de texto viram linhas logo depois do parágrafo em que estão.
 - O texto extraído é guardado com cada versão. O diff, a re-ancoragem e a aba *Comparar versões* usam esse texto; as seleções no PowerPoint também guardam o slide.
-- PowerPoint em **Slides**: o Marga desenha cada slide direto do `.pptx` (tema, layout, mestre, formas, imagens, tabelas), sem converter nada. Arraste sobre o texto para selecionar um trecho, ou clique num parágrafo para pegá-lo inteiro; as notas do apresentador aparecem embaixo. É um desenho aproximado: as fontes são as do navegador, e gráficos e SmartArt viram uma caixa.
-- PowerPoint em **PDF**: o LibreOffice converte a versão uma vez (alguns segundos) e o PDF fica guardado; a página N é o slide N, inclusive com slides ocultos. Clique num parágrafo ou arraste um retângulo para selecionar, como num PDF avulso.
+- PowerPoint em **Slides**: o Marga desenha cada slide direto do `.pptx` (tema, layout, mestre, formas, imagens, tabelas), sem converter nada. Arraste sobre o texto para selecionar um trecho, ou clique num parágrafo para pegá-lo inteiro; as notas do apresentador aparecem embaixo. É um desenho aproximado: as fontes são as instaladas no Mac (as embutidas no `.pptx` o navegador não lê; instale as do deck para chegar perto), e gráficos e SmartArt viram uma caixa.
+- PowerPoint em **PDF**: cada versão é convertida uma vez e o PDF fica guardado; a página N é o slide N, inclusive com slides ocultos. Clique num parágrafo ou arraste um retângulo para selecionar, como num PDF avulso.
+  - O PDF é só a vista: cada palavra da página é ligada à palavra do texto extraído de onde veio (o PowerPoint e o LibreOffice escrevem o texto na ordem das formas). A seleção cai na forma e no parágrafo exatos do `.pptx`, mesmo quando a frase se repete no slide, e a marca de um comentário só aparece nas palavras dele. Rodapé, número do slide e textos do layout não são do slide no `.pptx` e não se selecionam.
+  - A caixa da seleção e cada anotação mostram onde o trecho fica no arquivo (📍 *No .pptx*: slide, forma, parágrafo e caracteres): é o que o agente recebe para editar.
+  - No Mac com o PowerPoint, é ele quem exporta o PDF, que sai idêntico ao slide. O Marga deixa uma cópia da versão em `~/Library/Application Support/marga/powerpoint/`, o PowerPoint abre essa cópia por um instante e a fecha. Na primeira vez, o macOS pergunta se o app que roda o Marga (Terminal, Claude…) pode controlar o PowerPoint, e o PowerPoint pede acesso a essa pasta: clique em **Select…** e conceda (vale para todos os workspaces).
+  - Sem o PowerPoint, o LibreOffice converte em segundo plano; fontes e efeitos que ele não tem ficam diferentes. Em **⚙️ Ajustes de documento**, *PDF dos slides feito com* escolhe o conversor de cada apresentação.
 - No pacote, o agente recebe o caminho do arquivo e como editá-lo: o próprio `.docx`/`.pptx` (por exemplo, com python-docx ou python-pptx), preservando a formatação, e o código-fonte do `.html`. Como as linhas do pacote são as do texto extraído, ele localiza cada trecho pela citação exata; no HTML, cada comentário também traz as linhas do arquivo.
+- No PowerPoint, cada comentário diz onde editar no `.pptx`, mesmo que tenha sido feito no PDF: o slide, a forma (`shape_id` e nome, e os grupos em volta), o índice do parágrafo e os caracteres no texto dele, como o python-pptx os conta (`paragraph.text`), mais a célula nas tabelas e as notas do apresentador. O `bundle.json` traz isso em `pptx`, e o `.marga/AGENT.md`, um exemplo com python-pptx.
 - Se o arquivo mudar no disco (o agente salvou, ou você editou no Word), a barra lateral oferece **Registrar vN+1**, como nos outros tipos.
 
 </details>
@@ -207,7 +215,7 @@ Cada rodada fica em `.marga/rounds/NNN/`, e a mais recente também em `.marga/ro
 
 | Arquivo | Para quem | Conteúdo |
 |---|---|---|
-| `bundle.md` | Agente | O prompt: onde editar (o caminho completo de cada documento e, em Word, PowerPoint e HTML, como editá-lo), regras, comentários por arquivo com trecho numerado e citação exata (mais o slide ou as linhas do arquivo HTML), sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
+| `bundle.md` | Agente | O prompt: onde editar (o caminho completo de cada documento e, em Word, PowerPoint e HTML, como editá-lo), regras, comentários por arquivo com trecho numerado e citação exata (mais o slide e a forma, o parágrafo e os caracteres no `.pptx`, ou as linhas do arquivo HTML), sugestões como diff, links (com diagrama mermaid) e o formato da resposta |
 | `bundle.json` | Agente / scripts | Os mesmos dados estruturados (schema `marga.bundle/v1`), incluindo o diff desde a versão anterior |
 | `bundle.html` | Você | Relatório para leitura humana, autocontido |
 | `response.json` | Escrito pelo agente | Uma nota por comentário (schema `marga.response/v1`) |
@@ -256,13 +264,13 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 ├── rounds/NNN/                  round.json, bundle.{md,json,html} e response.json
 ├── rounds/latest.{md,json}      a rodada mais recente
 ├── AGENT.md                     guia fixo para o agente que aplica as rodadas
-├── build/A/vN/                  saídas do latexmk (out/), snapshot da versão (src/), result.json, outline.json e o PDF do PowerPoint (slides.pdf)
+├── build/A/vN/                  saídas do latexmk (out/), snapshot da versão (src/), result.json, outline.json e o PDF dos slides (slides-powerpoint.pdf ou slides-libreoffice.pdf)
 └── cache/                       texto (pdftext/) e seções (outline/) dos PDFs avulsos; perfil do LibreOffice (libreoffice/)
 ```
 
 Apague `.marga/` para recomeçar do zero. Seus arquivos continuam onde estão.
 
-O `uploads/` também ganha um `.gitignore` com `*`, para as cópias dos documentos enviados não entrarem no git do workspace. Ele só é criado quando não existe; para versionar as cópias, deixe o arquivo vazio. Fora do workspace, o Marga só guarda a lista de workspaces recentes, em `~/Library/Application Support/marga/recentes.json` no macOS ou em `~/.config/marga/` no Linux.
+O `uploads/` também ganha um `.gitignore` com `*`, para as cópias dos documentos enviados não entrarem no git do workspace. Ele só é criado quando não existe; para versionar as cópias, deixe o arquivo vazio. Fora do workspace, o Marga só guarda a lista de workspaces recentes, em `~/Library/Application Support/marga/recentes.json` no macOS ou em `~/.config/marga/` no Linux, e, no Mac, a cópia que o PowerPoint exporta para PDF, em `powerpoint/` nessa mesma pasta (apagada logo depois).
 
 </details>
 
@@ -304,7 +312,8 @@ O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`]
 - Só se comenta na versão mais recente, e só quando o disco bate com ela (registre a nova versão antes).
 - Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados. Documentos Word, PowerPoint, HTML e PDF avulso são um arquivo só, guardado inteiro em cada versão.
 - Word e HTML aparecem só como texto. No texto extraído, imagens, gráficos, SmartArt, cabeçalhos, rodapés e comentários do Word ficam de fora, e os formatos antigos (`.doc`, `.ppt`) não são lidos: salve-os como `.docx`/`.pptx`.
-- O modo **Slides** é aproximado: usa as fontes do navegador e não desenha gráficos, SmartArt nem imagens EMF/WMF. Para ver o slide fiel, use o modo **PDF** (LibreOffice), que substitui fontes que não tiver.
+- O modo **Slides** é aproximado: usa as fontes instaladas no Mac (não as embutidas no `.pptx`), mede entrelinhas um pouco diferente do PowerPoint e não desenha gráficos, SmartArt nem imagens EMF/WMF. Para ver o slide fiel, use o modo **PDF**: pelo PowerPoint (Mac) ele sai idêntico; pelo LibreOffice, fontes e efeitos podem mudar.
+- No modo PDF pelo PowerPoint, a cópia abre no PowerPoint por um instante a cada versão nova, e ele precisa das duas permissões da primeira vez (controle pelo macOS e acesso à pasta de troca).
 - No PDF, a marca de uma imagem (PNG, JPG) cobre a imagem exata. Já a de uma figura vetorial (um PDF incluído com `\includegraphics`) é a caixa do SyncTeX recortada à página, que pode ser maior que a figura.
 - O **📁 Finder** abre o seletor de pastas no computador onde o servidor roda. No Linux, ele precisa do `zenity` ou do `kdialog`.
 - Não há editor de texto no app nem chamada direta a uma API de LLM: o pacote é feito para um agente com acesso à pasta.

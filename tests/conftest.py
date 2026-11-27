@@ -28,3 +28,11 @@ def text_ws(tmp_path) -> Workspace:
     (root / "doc" / "a.txt").write_text("linha um\nlinha dois com erro\nlinha três\n", encoding="utf-8")
     (root / "outro.md").write_text("# Outro\n\nTexto do outro documento.\n", encoding="utf-8")
     return Workspace.open(root)
+
+
+@pytest.fixture(autouse=True)
+def no_powerpoint(monkeypatch):
+    """Nenhum teste abre o PowerPoint de verdade (no Mac, ele seria o conversor padrão dos slides)."""
+    from marga.core import office
+
+    monkeypatch.setattr(office, "POWERPOINT_APP", Path("/nao/existe/PowerPoint.app"))

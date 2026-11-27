@@ -1,7 +1,9 @@
 .mg-pdf { user-select: none; padding-top: 14px; }
+.mg-pdf.mg-zoomed { overflow: auto; max-height: calc(100vh - 8rem); }
 .mg-pdf .mg-page {
   position: relative;
   width: 100%;
+  margin: 0 auto;
   cursor: crosshair;
   border: 1px solid var(--st-border-color, rgba(128, 128, 128, 0.35));
   border-radius: 4px;

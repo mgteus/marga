@@ -43,8 +43,13 @@ def render(default_path: str) -> Workspace | None:
         folders.remember_workspace(ws.root)
         tools = latex.tools()
         tools["LibreOffice"] = office.available()
-        st.caption(" · ".join(f"{'✅' if tools[t] else '❌'} {t}" for t in ("latexmk", "synctex", "LibreOffice")),
-                   help="latexmk e synctex compilam o LaTeX; o LibreOffice converte PowerPoint em PDF (modo PDF).")
+        names = ["latexmk", "synctex", "LibreOffice"]
+        if office.powerpoint():  # no Mac, o PowerPoint exporta o PDF fiel dos slides
+            tools["PowerPoint"] = True
+            names.append("PowerPoint")
+        st.caption(" · ".join(f"{'✅' if tools[t] else '❌'} {t}" for t in names),
+                   help="latexmk e synctex compilam o LaTeX; o PowerPoint (no Mac) ou o LibreOffice fazem o PDF "
+                        "dos slides (modo PDF).")
         st.divider()
         _documents(str(ws.root))
         _add_document(ws)
@@ -266,8 +271,15 @@ def _settings(ws: Workspace) -> None:
             mains = sorted(p for p in latest.files if p.endswith(".tex")) if latest else [doc.main]
             main = st.selectbox("Arquivo principal", mains, index=mains.index(doc.main) if doc.main in mains else 0,
                                 key=f"cfg_main_{doc_id}")
+        elif doc.kind == "pptx":
+            options = {"auto": "Automático (PowerPoint, se instalado)", **office.ENGINES}
+            current = doc.engine if doc.engine in office.ENGINES else "auto"
+            engine = st.selectbox("PDF dos slides feito com", list(options), index=list(options).index(current),
+                                  format_func=options.get, key=f"cfg_conv_{doc_id}",
+                                  help="O PowerPoint (no Mac) mostra os slides exatamente como ele; o LibreOffice "
+                                       "funciona também no Linux, mas troca fontes e efeitos que não tem.")
         if st.button("Salvar ajustes", key=f"cfg_save_{doc_id}"):
-            changed_build = (engine, main) != (doc.engine, doc.main)
+            changed_build = doc.kind == "latex" and (engine, main) != (doc.engine, doc.main)  # o PDF de cada conversor fica
             doc.name, doc.engine, doc.main = name.strip() or doc.name, engine, main
             ws.save_doc(doc)
             if changed_build:

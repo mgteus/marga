@@ -11,7 +11,7 @@ from marga.core.versions import get_version, load_versions, version_texts
 from marga.core.workspace import MargaError, Workspace
 from marga.ui import state
 from marga.ui.render import anchored_lines, diff_html, links_dot, short
-from marga.ui.review import go_to
+from marga.ui.review import go_to, view_mode
 
 
 # ================================================================= links
@@ -47,11 +47,12 @@ def render_links(ws: Workspace) -> None:
 
 # ======================================================= comparar versões
 def _open_side_by_side(doc: Document, a: int, b: int) -> None:
-    mode = doc.modes[1] if len(doc.modes) > 1 else "Fonte"  # PDF (LaTeX, PDF avulso) ou Slides (PowerPoint)
+    mode = view_mode(doc)
     for side, n in (("L", a), ("R", b)):
         state.request(f"{side}_doc", doc.id)
         state.request(f"{side}_mode_{doc.id}", mode)
         state.request(f"{side}_ver_{doc.id}", n)
+    state.request("show_right", True)  # lado a lado precisa da coluna da direita
     state.request("nav", "Revisão")
 
 

@@ -29,6 +29,38 @@ def test_app_renders_every_section(demo_ws, monkeypatch):
         assert not at.exception, (section, at.exception)
 
 
+
+def test_right_column_turns_off_and_comes_back_as_it_was(demo_ws, monkeypatch):
+    actions.add_document(demo_ws, "artigo")
+    parecer = actions.add_document(demo_ws, "parecer.pdf")
+    v = latest_version(demo_ws, parecer.id)
+    text = version_text(demo_ws, parecer, v, parecer.root)
+    actions.create_annotation(demo_ws, parecer.id, anchor_from_offsets(text, parecer.root, v.n, 0, 12, 1),
+                              "corrigir", "teste")
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["R_doc"] = "A"  # a direita mostra o artigo (o padrão seria o parecer)
+    at.session_state["L_doc"] = parecer.id
+    at.session_state[f"L_mode_{parecer.id}"] = "PDF"
+    at.run()
+
+    def doc_pickers():
+        return [box.key for box in at.selectbox if box.key in ("L_doc", "R_doc")]
+
+    def notes_headers():
+        return [m.value for m in at.markdown if m.value.startswith("**Anotações de")]
+
+    assert doc_pickers() == ["L_doc", "R_doc"] and at.selectbox(key="L_zoom").value == "width"
+    at.toggle(key="show_right").set_value(False).run()
+    assert not at.exception, at.exception
+    assert doc_pickers() == ["L_doc"]  # um documento só, com a seleção e as anotações ao lado
+    assert notes_headers() == [f"**Anotações de {parecer.id}** · 1 aberta(s) de 1"]
+    at.selectbox(key="L_zoom").select("page").run()  # página inteira na altura da tela
+    assert not at.exception, at.exception
+    at.toggle(key="show_right").set_value(True).run()
+    assert doc_pickers() == ["L_doc", "R_doc"] and at.selectbox(key="R_doc").value == "A"
+    assert at.selectbox(key="L_zoom").value == "page"
+
 def test_sections_navigate_pdf_and_filter_its_text(demo_ws, monkeypatch):
     path = demo_ws.root / "livro.pdf"
     pdf = pymupdf.open()

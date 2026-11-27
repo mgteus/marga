@@ -9,7 +9,7 @@ import textwrap
 from pathlib import Path
 
 from .diffing import changes, unified
-from .formats import Extracted
+from .formats import Extracted, pptx_where, target_label
 from .latex import load_result
 from .models import (
     AGENT_STATUSES,
@@ -23,7 +23,7 @@ from .models import (
     now_iso,
 )
 from .textmap import excerpt
-from .versions import doc_status, extracted_text, latest_version, previous_version, version_texts
+from .versions import doc_status, extracted_text, latest_version, pptx_places, previous_version, version_texts
 from .workspace import MargaError, Workspace, read_json, write_json, write_text
 
 BUNDLE_SCHEMA = "marga.bundle/v1"
@@ -49,6 +49,13 @@ RULES = [
     "Word (.docx) e PowerPoint (.pptx): edite o próprio arquivo, por exemplo com python-docx ou python-pptx, "
     "trocando só o texto dos trechos e preservando a formatação; não converta o arquivo nem salve uma cópia com "
     "outro nome. HTML: edite o código-fonte, mantendo as tags.",
+    "PowerPoint: o comentário pode ter sido feito no PDF ou nos slides que o Marga desenha, mas eles são só a vista: "
+    "edite sempre o .pptx. Cada comentário diz onde o trecho está nele (No .pptx; pptx no JSON): o slide, a forma "
+    "(shape_id e nome, também dentro de grupos), o índice do parágrafo em text_frame.paragraphs e os caracteres "
+    "[início, fim) de paragraph.text no python-pptx, contando de 0 (lá, cada quebra de linha é \\v; no pacote, um "
+    "espaço); em tabelas, a célula (linha, coluna) de shape.table.cell; nas notas, "
+    "slide.notes_slide.notes_text_frame. Confira o trecho antes de editar e troque o texto só nos runs desse "
+    "intervalo.",
     "Em Word, PowerPoint, HTML e PDF avulso, as linhas do pacote são as do texto que o Marga extraiu, não as do "
     "arquivo: localize cada trecho pela citação exata. Nesse texto, # marca títulos, - itens de lista, | linhas "
     "de tabela e === slide N === o começo de cada slide.",
@@ -68,7 +75,8 @@ DOC_NOTES = {
     "docx": "Word: as linhas abaixo são do texto que o Marga extraiu do arquivo, um parágrafo por linha. Localize "
             "cada trecho pela citação exata e edite o próprio `.docx`, preservando a formatação.",
     "pptx": "PowerPoint: as linhas abaixo são do texto que o Marga extraiu do arquivo, e `=== slide N ===` abre "
-            "cada slide. Localize cada trecho pela citação exata, no slide indicado, e edite o próprio `.pptx`.",
+            "cada slide. Os comentários podem ter sido feitos no PDF dos slides, mas a edição é sempre no próprio "
+            "`.pptx`: cada um diz em *No .pptx* o slide, a forma, o parágrafo e os caracteres exatos.",
     "html": "HTML: as linhas abaixo são do texto que o Marga extraiu do arquivo; cada comentário indica também as "
             "linhas correspondentes no arquivo. Edite o código-fonte.",
 }
@@ -95,6 +103,37 @@ Word, PowerPoint e HTML: o Marga revisa o texto que extrai desses arquivos (um p
 tabela por linha; `=== slide N ===` abre cada slide), então as linhas do pacote não são as do arquivo: localize
 cada trecho pela citação exata. Edite o próprio arquivo: o `.docx` e o `.pptx` com python-docx ou python-pptx,
 preservando a formatação, e o `.html` no código-fonte.
+
+PowerPoint: o PDF e os slides desenhados pelo Marga são só a vista; quem se edita é o `.pptx`. Cada comentário
+traz, em `pptx` no `bundle.json`, onde o trecho está no arquivo. Com python-pptx:
+
+```python
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+def find_shape(shapes, shape_id):
+    for shape in shapes:
+        if shape.shape_id == shape_id:
+            return shape
+        if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+            found = find_shape(shape.shapes, shape_id)
+            if found is not None:
+                return found
+
+prs = Presentation(caminho_do_pptx)
+for alvo in comentario["pptx"]:
+    slide = prs.slides[alvo["slide"] - 1]
+    if alvo.get("notes"):
+        frame = slide.notes_slide.notes_text_frame
+    else:
+        shape = find_shape(slide.shapes, alvo["shape_id"])
+        frame = shape.table.cell(*alvo["table_cell"]).text_frame if "table_cell" in alvo else shape.text_frame
+    paragraph = frame.paragraphs[alvo["paragraph"]]
+    inicio, fim = alvo["chars"]
+    assert paragraph.text[inicio:fim].replace("\\v", " ") == alvo["text"]
+    # troque o texto nos runs de paragraph.runs que cobrem [inicio, fim), sem recriar o parágrafo
+prs.save(caminho_do_pptx)
+```
 """
 
 
@@ -185,7 +224,8 @@ def _link_refs(ann: Annotation, links: list[Link], by_id: dict[str, Annotation])
 
 
 def _annotation_entry(ann: Annotation, texts: dict[str, str], latest_n: int | None, links: list[Link],
-                      by_id: dict[str, Annotation], doc: Document, extracted: dict[str, Extracted]) -> dict:
+                      by_id: dict[str, Annotation], doc: Document, extracted: dict[str, Extracted],
+                      places: list[dict] | None = None) -> dict:
     anchor = ann.anchor
     stale = latest_n is not None and anchor.version != latest_n
     text = texts.get(anchor.file)
@@ -225,6 +265,10 @@ def _annotation_entry(ann: Annotation, texts: dict[str, str], latest_n: int | No
     if source is not None and not stale:
         if doc.kind == "pptx":
             entry["slide"] = source.page_of_line(anchor.start_line)
+            targets = pptx_where(places, source.text, (anchor.start_line, anchor.start_col),
+                                 (anchor.end_line, anchor.end_col)) if places else []
+            if targets:
+                entry["pptx"] = targets  # onde editar no .pptx: slide, forma, parágrafo e caracteres
         file_lines = source.source_lines(anchor.start_line, anchor.end_line) if doc.kind == "html" else None
         if file_lines:
             entry["file_lines"] = list(file_lines)  # HTML: linhas do arquivo onde o trecho está
@@ -248,6 +292,7 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
 
     texts: dict[str, dict[str, str]] = {}
     extracted: dict[str, dict[str, Extracted]] = {}
+    places: dict[str, list[dict] | None] = {}
     latest_n: dict[str, int] = {}
     doc_entries = []
     for doc in docs:
@@ -259,6 +304,8 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
         latest_n[doc.id] = latest.n
         if doc.kind in EXTRACTED_KINDS:
             extracted[doc.id] = {path: extracted_text(ws, doc, latest, path) for path in latest.files}
+        if doc.kind == "pptx":
+            places[doc.id] = pptx_places(ws, doc, latest)
         prev = previous_version(ws, doc.id, latest.n)
         entry = {
             "id": doc.id, "name": doc.name, "kind": doc.kind, "kind_label": doc.kind_label,
@@ -300,7 +347,7 @@ def build_bundle(ws: Workspace, round_n: int, instructions: str = "", include_so
 
     ann_entries = [
         _annotation_entry(a, texts.get(a.doc, {}), latest_n.get(a.doc), links, by_id, docs_by_id[a.doc],
-                          extracted.get(a.doc, {}))
+                          extracted.get(a.doc, {}), places.get(a.doc))
         for a in open_anns
     ]
     link_entries = []
@@ -397,6 +444,14 @@ def _where_badges(a: dict) -> list[str]:
     return out
 
 
+def _pptx_item(targets: list[dict]) -> str:
+    """Onde editar no .pptx: um alvo por parágrafo, com o texto exato de cada um."""
+    rows = [f"{target_label(t)}: {_inline_code(t['text'])}" for t in targets]
+    if len(rows) == 1:
+        return f"- **No .pptx:** {rows[0]}"
+    return "- **No .pptx:**\n" + "\n".join(f"  - {row}" for row in rows)
+
+
 def _md_annotation(a: dict) -> list[str]:
     head = " · ".join([f"##### {a['id']}", a["type_label"], _lines_label(a), *_where_badges(a)])
     parts = [head, ""]
@@ -412,6 +467,8 @@ def _md_annotation(a: dict) -> list[str]:
             items.append(_block_item("Trecho exato", _fence(quote, _lang(a["file"]))))
         else:
             items.append(f"- **Trecho exato:** {_inline_code(quote)}")
+    if a.get("pptx"):
+        items.append(_pptx_item(a["pptx"]))
     if a["body"]:
         items.append(_item("Pedido" if a["kind"] == "comment" else "Nota", a["body"]))
     if a["suggestion"] is not None:
@@ -537,6 +594,8 @@ def render_markdown(b: dict) -> str:
         for a in sorted(marks, key=lambda x: (x["doc"], x["file"], x["lines"][0])):
             note = f" — {a['body']}" if a["body"] else ""
             where = "".join(f" · {badge}" for badge in _where_badges(a))
+            if a.get("pptx"):
+                where += " · no .pptx: " + "; ".join(target_label(t) for t in a["pptx"])
             out.append(f"- `{a['id']}` · {a['doc']} · `{a['file']}:{a['lines'][0]}`{where} · "
                        f"{_inline_code(_short(a['quote'], 100))}{note}")
 
@@ -633,6 +692,9 @@ def _html_annotation(a: dict) -> str:
     out.append("<dl>")
     if a["quote"]:
         out.append(f"<dt>Trecho exato</dt><dd><code>{_e(a['quote'])}</code></dd>")
+    if a.get("pptx"):
+        out.append("<dt>No .pptx</dt><dd>" + "<br>".join(
+            f"{_e(target_label(t))}: <code>{_e(t['text'])}</code>" for t in a["pptx"]) + "</dd>")
     if a["body"]:
         label = "Pedido" if a["kind"] == "comment" else "Nota"
         out.append(f"<dt>{label}</dt><dd>{_e(a['body']).replace(chr(10), '<br>')}</dd>")

@@ -35,6 +35,7 @@
 .mg-slide .mg-pic img { position: absolute; max-width: none; user-select: none; -webkit-user-drag: none; }
 .mg-slide svg.mg-ln { position: absolute; overflow: visible; }
 .mg-slide svg.mg-geo { position: absolute; left: 0; top: 0; overflow: visible; }
+.mg-slide .mg-fill { position: absolute; inset: 0; }
 .mg-slide .mg-obj {
   display: flex;
   align-items: center;

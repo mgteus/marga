@@ -305,16 +305,29 @@ _BULLETED = {"body", "obj"}  # placeholders de conteúdo: tópicos com marcador,
 _IGNORED = {"dt", "ftr", "sldNum", "hdr", "sldImg"}  # data, rodapé, número do slide…
 
 
-def a_text(p: ET.Element) -> str:
-    """Texto de um parágrafo do DrawingML (``a:p``), como vai para o texto extraído: quebras viram espaço."""
+# Quebras de linha dentro de um a:t (raras, mas possíveis) viram espaço: cada parágrafo é uma linha do texto.
+_BREAKS = str.maketrans({c: " " for c in "\n\r\v\f\x1c\x1d\x1e\x85  "})
+
+
+def raw_text(p: ET.Element) -> str:
+    """Texto de um parágrafo do DrawingML (``a:p``), sem cortar os espaços das pontas.
+
+    Cada quebra de linha (``a:br``) vira um espaço. No python-pptx ela é ``\\v`` em ``paragraph.text``: um caractere
+    também, então as posições batem caractere a caractere com o texto do parágrafo no python-pptx.
+    """
     out = []
     for child in p:
         if child.tag in (_A + "r", _A + "fld"):
             t = child.find(_A + "t")
-            out.append(t.text or "" if t is not None else "")
+            out.append((t.text or "") if t is not None else "")
         elif child.tag == _A + "br":
             out.append(" ")
-    return "".join(out).strip()
+    return "".join(out).translate(_BREAKS)
+
+
+def a_text(p: ET.Element) -> str:
+    """Texto de um parágrafo do DrawingML (``a:p``), como vai para o texto extraído: quebras viram espaço."""
+    return raw_text(p).strip()
 
 
 _a_text = a_text
@@ -327,30 +340,52 @@ def placeholder(sp: ET.Element) -> tuple[str, str | None] | None:
     return None if ph is None else (ph.get("type", "obj"), ph.get("idx"))
 
 
+def _c_nv(sh: ET.Element) -> ET.Element | None:
+    nv = sh[0] if len(sh) else None
+    return None if nv is None else nv.find(_P + "cNvPr")
+
+
 def shape_id(sh: ET.Element) -> str:
     """Id da forma no slide (``p:cNvPr``): a chave que liga o texto extraído ao leitor de slides."""
-    nv = sh[0] if len(sh) else None
-    c_nv = None if nv is None else nv.find(_P + "cNvPr")
+    c_nv = _c_nv(sh)
     return "" if c_nv is None else c_nv.get("id", "")
 
 
-def _shape_lines(tree: ET.Element | None) -> Iterator[tuple[bool, str, str]]:
-    """Linhas das formas de um slide, na ordem em que aparecem: (é título?, texto, chave).
+def _shape(sh: ET.Element, groups: tuple[str, ...]) -> dict:
+    c_nv = _c_nv(sh)
+    out = {"shape_id": shape_id(sh), "shape": "" if c_nv is None else c_nv.get("name", "")}
+    return {**out, "groups": list(groups)} if groups else out
+
+
+def _seg(start: int, raw: str, paragraph: int) -> list[int]:
+    """Pedaço de uma linha do texto que vem de um parágrafo: [início, fim) na linha, o índice do parágrafo e onde
+    o pedaço começa no texto do parágrafo (os espaços do começo foram cortados)."""
+    text = raw.strip()
+    return [start, start + len(text), paragraph, len(raw) - len(raw.lstrip())]
+
+
+def _shape_lines(tree: ET.Element | None, groups: tuple[str, ...] = ()) -> Iterator[tuple[bool, str, str, dict]]:
+    """Linhas das formas de um slide, na ordem em que aparecem: (é título?, linha, chave, lugar no arquivo).
 
     A chave é ``id:parágrafo`` (``id:rN`` numa linha de tabela), com o índice entre todos os parágrafos da forma.
+    O lugar diz a forma (id, nome e grupos em volta) e, em ``segs``, de que parágrafo vem cada pedaço da linha.
     """
     for sh in [] if tree is None else tree:
-        if sh.tag in (_MC + "AlternateContent", _MC + "Choice", _P + "grpSp"):
-            yield from _shape_lines(sh if sh.tag != _MC + "AlternateContent" else sh.find(_MC + "Choice"))
+        if sh.tag in (_MC + "AlternateContent", _MC + "Choice"):
+            yield from _shape_lines(sh if sh.tag == _MC + "Choice" else sh.find(_MC + "Choice"), groups)
+        elif sh.tag == _P + "grpSp":
+            c_nv = _c_nv(sh)
+            yield from _shape_lines(sh, (*groups, "" if c_nv is None else c_nv.get("name", "")))
         elif sh.tag == _P + "sp":
             ph = placeholder(sh)
             kind = ph[0] if ph else None
             body = sh.find(_P + "txBody")
             if kind in _IGNORED or body is None:
                 continue
-            sid = shape_id(sh)
+            sid, shape = shape_id(sh), _shape(sh, groups)
             for i, p in enumerate(body.findall(_A + "p")):
-                text = a_text(p)
+                raw = raw_text(p)
+                text = raw.strip()
                 if not text:
                     continue
                 ppr = p.find(_A + "pPr")
@@ -358,21 +393,31 @@ def _shape_lines(tree: ET.Element | None) -> Iterator[tuple[bool, str, str]]:
                 bullet = ppr is not None and (ppr.find(_A + "buChar") is not None or ppr.find(_A + "buAutoNum") is not None)
                 no_bullet = ppr is not None and ppr.find(_A + "buNone") is not None
                 if kind in _TITLES:
-                    yield True, text, f"{sid}:{i}"
+                    prefix = "# "
                 elif bullet or (kind in _BULLETED and not no_bullet):
-                    yield False, "  " * (int(lvl) if lvl.isdigit() else 0) + "- " + text, f"{sid}:{i}"
+                    prefix = "  " * (int(lvl) if lvl.isdigit() else 0) + "- "
                 else:
-                    yield False, text, f"{sid}:{i}"
+                    prefix = ""
+                yield kind in _TITLES, prefix + text, f"{sid}:{i}", {**shape, "segs": [_seg(len(prefix), raw, i)]}
         elif sh.tag == _P + "graphicFrame":
             tbl = sh.find(f".//{_A}tbl")
-            sid = shape_id(sh)
+            sid, shape = shape_id(sh), _shape(sh, groups)
             for r, tr in enumerate([] if tbl is None else tbl.findall(_A + "tr")):
-                cells = [" ".join(t for t in map(a_text, tc.iter(_A + "p")) if t) for tc in tr.findall(_A + "tc")]
+                cells, segs, pos = [], [], 2  # a linha é "| célula | célula |"
+                for c, tc in enumerate(tr.findall(_A + "tc")):
+                    parts: list[str] = []
+                    for j, p in enumerate(tc.iter(_A + "p")):
+                        raw = raw_text(p)
+                        if raw.strip():
+                            segs.append([*_seg(pos + sum(len(x) + 1 for x in parts), raw, j), r, c])
+                            parts.append(raw.strip())
+                    cells.append(" ".join(parts))
+                    pos += len(cells[-1]) + 3
                 if any(cells):
-                    yield False, "| " + " | ".join(cells) + " |", f"{sid}:r{r}"
+                    yield False, "| " + " | ".join(cells) + " |", f"{sid}:r{r}", {**shape, "segs": segs}
 
 
-def _notes_lines(zf: zipfile.ZipFile, slide_part: str) -> list[str]:
+def _notes_lines(zf: zipfile.ZipFile, slide_part: str) -> list[tuple[str, dict]]:
     part = _related(_rels(zf, slide_part), "notesSlide")
     notes = _xml(zf, part, required=False) if part else None
     if notes is None:
@@ -382,11 +427,20 @@ def _notes_lines(zf: zipfile.ZipFile, slide_part: str) -> list[str]:
         body = sp.find(_P + "txBody")
         ph = placeholder(sp)
         if ph and ph[0] == "body" and body is not None:
-            out += [t for t in map(a_text, body.findall(_A + "p")) if t]
+            shape = {"part": part, **_shape(sp, ())}
+            for i, p in enumerate(body.findall(_A + "p")):
+                raw = raw_text(p)
+                if raw.strip():
+                    out.append((raw.strip(), {**shape, "segs": [_seg(0, raw, i)]}))
     return out
 
 
-def extract_pptx(data: bytes) -> Extracted:
+def extract_pptx(data: bytes, detail: bool = False) -> Extracted:
+    """Texto de um .pptx, com o slide e a chave da forma de cada linha.
+
+    Com ``detail``, cada linha diz também de onde vem no arquivo (parte XML, forma, parágrafos; veja
+    ``pptx_where``). Isso não vai para o texto guardado com a versão: é recalculado do próprio .pptx.
+    """
     with _open_zip(data, LABELS["pptx"]) as zf:
         main, pres = _main_xml(zf, "ppt/presentation.xml", _P + "presentation", LABELS["pptx"])
         rels = _rels(zf, main)
@@ -396,18 +450,79 @@ def extract_pptx(data: bytes) -> Extracted:
             slide = _xml(zf, part)
             page = {"page": n}
             items = list(_shape_lines(slide.find(f"{_P}cSld/{_P}spTree")))
-            title = next((text for is_title, text, _ in items if is_title), "")
+            title = next((line[2:] for is_title, line, _, _ in items if is_title), "")
             marker = SLIDE_MARKER.format(n=n, hidden=" · oculto" if slide.get("show") == "0" else "")
             out.add(marker, page, section=(1, f"Slide {n}" + (f" · {title}" if title else "")))
-            for is_title, text, key in items:
-                out.add(f"# {text}" if is_title else text, {"page": n, "key": key})
+            for _, line, key, where in items:
+                out.add(line, {"page": n, "key": key, **({"part": part, **where} if detail else {})})
             notes = _notes_lines(zf, part)
             if notes:
                 out.add(NOTES_LABEL, page)
-                for text in notes:
-                    out.add(text, {"page": n, "note": True})
+                for text, where in notes:
+                    out.add(text, {"page": n, "note": True, **(where if detail else {})})
             out.add("", page)
         return out.result()
+
+
+def pptx_detail(text: str, data: bytes) -> list[dict] | None:
+    """As linhas do texto guardado de uma versão com o lugar de cada uma no .pptx (``extract_pptx(detail=True)``).
+
+    ``None`` se o texto extraído hoje do arquivo não é mais o guardado (a extração mudou depois do registro).
+    """
+    try:
+        fresh = extract_pptx(data, detail=True)
+    except MargaError:
+        return None
+    return fresh.lines if fresh.text == text else None
+
+
+def pptx_where(lines: list[dict], text: str, start: tuple[int, int], end: tuple[int, int]) -> list[dict]:
+    """Onde fica, no .pptx, o trecho do texto extraído de ``start`` a ``end`` (linha, coluna): um alvo por parágrafo.
+
+    ``lines`` vem de ``pptx_detail``. Cada alvo tem o slide, a parte XML, a forma (``shape_id``, ``shape_name`` e,
+    se ela estiver num grupo, ``groups``), o índice do parágrafo em ``text_frame.paragraphs`` e os caracteres
+    ``[início, fim)`` em ``paragraph.text`` do python-pptx, mais o texto desse pedaço. Em tabelas, ``table_cell``
+    (linha, coluna); nas notas do apresentador, ``notes``. Prefixos do texto extraído (``# ``, ``- ``, ``|``) não
+    são do arquivo e ficam de fora.
+    """
+    rows = text.split("\n")
+    out = []
+    for n in range(start[0], end[0] + 1):
+        if not 1 <= n <= min(len(rows), len(lines)):
+            continue
+        info, row = lines[n - 1], rows[n - 1]
+        a = start[1] if n == start[0] else 0
+        b = end[1] if n == end[0] else len(row)
+        for seg in info.get("segs", []):
+            s, e, paragraph, offset = seg[:4]
+            lo, hi = max(a, s), min(b, e)
+            if lo > hi or (lo == hi and a != b):
+                continue
+            sid = info.get("shape_id", "")
+            target = {"slide": info.get("page"), "part": info.get("part"), "shape_id": int(sid) if sid.isdigit() else sid,
+                      "shape_name": info.get("shape", ""), "paragraph": paragraph,
+                      "chars": [offset + lo - s, offset + hi - s], "text": row[lo:hi]}
+            if info.get("groups"):
+                target["groups"] = info["groups"]
+            if len(seg) > 4:
+                target["table_cell"] = seg[4:6]
+            if info.get("note"):
+                target["notes"] = True
+            out.append(target)
+    return out
+
+
+def target_label(t: dict) -> str:
+    """Um alvo de ``pptx_where`` em uma linha, para pessoas e agentes."""
+    if t.get("notes"):
+        where = "notas do apresentador"
+    else:
+        where = f"forma {t['shape_id']}" + (f" “{t['shape_name']}”" if t.get("shape_name") else "")
+        if t.get("groups"):
+            where += " (no grupo " + " › ".join(f"“{g}”" for g in t["groups"]) + ")"
+        if t.get("table_cell"):
+            where += f" · célula ({t['table_cell'][0]}, {t['table_cell'][1]})"
+    return f"slide {t['slide']} · {where} · parágrafo {t['paragraph']} · caracteres {t['chars'][0]}–{t['chars'][1]}"
 
 
 # ------------------------------------------------------------------ HTML

@@ -41,7 +41,7 @@ def apply_pending() -> None:
 
 # Widgets cujo valor deve sobreviver à troca de aba (o Streamlit apaga o estado de widgets não desenhados).
 _KEEP = re.compile(
-    r"^(?:[LR]_doc|[LR]_(?:mode|ver)_[^_]+|[LR]_(?:file|page|rng)_[^_]+_\d+|show_diff|show_threads|flt_[LR]_[^_]+"
+    r"^(?:[LR]_doc|[LR]_(?:mode|ver)_[^_]+|[LR]_(?:file|page|rng)_[^_]+_\d+|show_diff|show_threads|show_right|[LR]_zoom|flt_[LR]_[^_]+"
     r"|cmp_doc|cmp_(?:from|to)_[^_]+|lk_(?:src|dst|rel|note)|instr|incl_src)$"
 )
 

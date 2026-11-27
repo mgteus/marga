@@ -32,6 +32,25 @@ function drawRects(root) {
   root.querySelector(".mg-drag").style.display = "none";
 }
 
+// Tamanho da página: "width" ocupa a coluna; "page" cabe inteira na altura da tela; um número é a porcentagem do
+// tamanho real (1 pt = 96/72 px), com rolagem própria quando a página passa da coluna. As marcas e os cliques
+// usam o tamanho desenhado, então valem em qualquer tamanho.
+function applySize(root) {
+  const d = root._mg.data;
+  const page = root.querySelector(".mg-page");
+  const size = String(d.size || "width");
+  const ratio = (d.w || 1) / (d.h || 1);
+  const percent = /^\d+$/.test(size);
+  root.classList.toggle("mg-zoomed", percent);
+  if (size === "page") {
+    page.style.width = `min(100%, calc((100vh - 9rem) * ${ratio}))`;
+  } else if (percent) {
+    page.style.width = `${(((d.w || 1) * 96) / 72) * (Number(size) / 100)}px`;
+  } else {
+    page.style.width = "100%";
+  }
+}
+
 function bind(root) {
   const st = root._mg;
   const page = root.querySelector(".mg-page");
@@ -120,6 +139,7 @@ export default function (component) {
   const st = root._mg;
   st.data = data || {};
   st.trigger = setTriggerValue;
+  applySize(root);
   if (st.data.img_key !== st.imgKey) {
     root.querySelector(".mg-img").src = st.data.img || "";
     st.imgKey = st.data.img_key;
