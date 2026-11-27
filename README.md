@@ -30,7 +30,7 @@ Pedir correções a um agente pelo chat ("no segundo parágrafo da introdução,
 | 🔗 **Rastreio entre arquivos** | Ligue trechos de quaisquer documentos, LaTeX, PDF, Word, PowerPoint, HTML ou texto (consistente, propagar, mover, contradiz…), e veja o grafo dos links. |
 | 📦 **Rodadas para o agente** | Um pacote em Markdown, JSON e HTML, mais um prompt curto para colar no Claude Code (ou em outro agente com acesso à pasta). |
 | 🔄 **Versões e re-ancoragem** | Snapshots imutáveis por sha256. Na versão nova, cada comentário fica *inalterado*, *alterado*, *movido* ou *órfão*. |
-| ⚡ **Compilação paralela** | `latexmk` compila os documentos visíveis ao mesmo tempo; um erro de compilação vira comentário com um clique. |
+| ⚡ **Compilação em segundo plano** | Cada versão nova compila sozinha ao ser registrada. Em segundos aparece uma prévia sem figuras, que o PDF completo substitui quando fica pronto. Um erro de compilação vira comentário com um clique. |
 | 📕 **PDFs avulsos** | PDFs sem fonte também são revisáveis, a partir do texto extraído de cada página. |
 | 📘 **Word, PowerPoint e HTML** | `.docx`, `.pptx` e `.html` viram documentos revisáveis: o Marga extrai o texto (parágrafos, títulos, tópicos de cada slide, tabelas) e compara as versões por ele. Quem edita o próprio arquivo é o agente. |
 | 📙 **Slides do PowerPoint** | Além do texto, o PowerPoint aparece desenhado slide a slide, sem converter nada (modo **Slides**), ou como PDF exportado pelo próprio PowerPoint (no Mac) ou pelo LibreOffice (modo **PDF**). Selecione e comente direto no slide. |
@@ -128,7 +128,7 @@ flowchart LR
    | **Enviar** | Um arquivo do computador: `.zip` do Overleaf, `.pdf`, `.tex`, `.docx`, `.pptx`, `.html`, `.md` ou `.txt` |
    | **Pasta** | O que já está na pasta: pastas LaTeX (o `.tex` com `\documentclass`), PDFs avulsos, Word (`.docx`), PowerPoint (`.pptx`), HTML (`.html`, `.htm`) e textos (`.md`, `.txt`, `.rst`) |
    | **Disco** | O caminho de um arquivo (ex.: `~/Downloads/projeto.zip`), sem passar pelo navegador. Melhor para arquivos grandes |
-2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). O PDF compila sozinho na primeira vez; **▶ Compilar visíveis** recompila os documentos LaTeX das duas colunas em paralelo. Word, HTML e textos têm só o modo Fonte, com o texto do arquivo. O PowerPoint tem três: **Fonte** (o texto), **Slides** (desenhado sem conversão) e **PDF** (exportado pelo PowerPoint ou convertido pelo LibreOffice). Com o PowerPoint instalado, ele abre no PDF, que é idêntico ao slide.
+2. **Revise em duas colunas.** Cada coluna mostra um documento, uma versão e um modo (Fonte ou PDF). Cada versão LaTeX compila sozinha, em segundo plano, assim que é registrada, ou na primeira vez que você a abre no modo PDF. Enquanto as figuras não ficam prontas, o PDF aparece como uma prévia sem figuras: cada figura é uma moldura do mesmo tamanho, e o layout é o mesmo. Na prévia, você já pode clicar, selecionar e comentar. O PDF completo entra no lugar sozinho, na mesma página. **▶ Compilar visíveis** recompila do zero as versões LaTeX das duas colunas. Word, HTML e textos têm só o modo Fonte, com o texto do arquivo. O PowerPoint tem três: **Fonte** (o texto), **Slides** (desenhado sem conversão) e **PDF** (exportado pelo PowerPoint ou convertido pelo LibreOffice). Com o PowerPoint instalado, ele abre no PDF, que é idêntico ao slide.
    - **Coluna da direita:** desligue o interruptor na barra de cima para revisar um documento só. Ele fica na metade esquerda, do mesmo tamanho de antes, e a seleção e as anotações dele ficam na metade direita, sempre à vista enquanto a página rola. Ao ligar de novo, a direita volta com o mesmo documento, modo e versão (e **🖼️ Abrir lado a lado**, em *Comparar versões*, religa sozinho).
    - **Tamanho do PDF:** ao lado do número da página. **Largura** ocupa a coluna (o padrão); **Página** mostra a página inteira na altura da tela; as porcentagens são do tamanho real e, quando a página passa da coluna, ela ganha rolagem própria. O zoom do navegador não muda o tamanho do PDF, porque ele sempre acompanha a coluna.
    - **§ Seções:** no modo PDF, a lista ao lado do número da página acompanha a página atual e salta para qualquer capítulo ou seção. Digite parte do título para filtrar.
@@ -161,7 +161,7 @@ flowchart LR
 4. Se faltar um pacote no TeX Live local, o log mostra o arquivo e o comando para descobrir qual pacote instalar (`tlmgr search --global --file /arquivo.sty`). Projetos com biblatex precisam do `biber`.
 5. **Revisão aplicada no Overleaf?** Baixe o projeto de novo e, em **Enviar** ou **Disco**, escolha **Adicionar como → Nova versão de A**. Os arquivos do `.zip` substituem a cópia em `uploads/`, e os textos que não vierem nele saem da cópia. Figuras que sumiram ficam, para as versões antigas continuarem compilando, e a v anterior continua guardada. A versão nova responde à rodada pendente, como quando o agente edita o disco.
 
-A primeira compilação de um projeto com muitas figuras leva alguns minutos. Uma dissertação com cerca de 350 MB de imagens levou cerca de 100 s, e o limite é de 10 minutos. O `marga` aceita envios de até 2 GB e as versões antigas reaproveitam as figuras por hard link, sem copiá-las.
+Projetos com muitas figuras compilam em três etapas. As passadas que acertam referências, sumário e bibliografia pulam as figuras, e só a última as embute, comprimidas no nível 1. Isso deixa o PDF de trabalho uns 25% maior, sem perda. Uma dissertação com cerca de 350 MB de imagens passou de ~81 s para ~16 s, com a prévia sem figuras aos ~4 s. O limite é de 10 minutos. O `marga` aceita envios de até 2 GB e as versões antigas reaproveitam as figuras por hard link, sem copiá-las.
 
 </details>
 
@@ -272,7 +272,7 @@ Status aceitos: `feito`, `parcial`, `nao_feito` e `resposta`.
 ├── rounds/NNN/                  round.json, bundle.{md,json,html} e response.json
 ├── rounds/latest.{md,json}      a rodada mais recente
 ├── AGENT.md                     guia fixo para o agente que aplica as rodadas
-├── build/A/vN/                  saídas do latexmk (out/), snapshot da versão (src/), result.json, outline.json e o PDF dos slides (slides-powerpoint.pdf ou slides-libreoffice.pdf)
+├── build/A/vN/                  saídas do latexmk (out/), cópia da versão (src/), result.json, a prévia sem figuras (previa.pdf), outline.json, compilando.lock (só durante a compilação) e o PDF dos slides (slides-powerpoint.pdf ou slides-libreoffice.pdf)
 └── cache/                       texto (pdftext/) e seções (outline/) dos PDFs avulsos; perfil do LibreOffice (libreoffice/)
 ```
 
@@ -318,7 +318,7 @@ O design completo está em [`docs/superpowers/specs/2026-11-22-marga-design.md`]
 - O PDF é mostrado uma página por vez. Navega-se pelas setas, pelo número ou pela lista de seções.
 - A detecção de títulos em PDFs sem marcadores é uma heurística. Ela funciona bem com títulos numerados em negrito ou maiores que o texto (o padrão do LaTeX), mas pode errar em layouts incomuns.
 - Só se comenta na versão mais recente, e só quando o disco bate com ela (registre a nova versão antes).
-- Versões antigas compilam com as figuras atuais da pasta: só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados. Documentos Word, PowerPoint, HTML e PDF avulso são um arquivo só, guardado inteiro em cada versão.
+- Toda versão compila numa cópia própria (`build/A/vN/src/`), com as figuras atuais da pasta, então editar os arquivos durante a compilação não muda o PDF. Só arquivos de texto (`.tex`, `.bib`, `.sty`, `.cls`, `.bst`, `.md`, `.markdown`, `.txt`, `.rst`) são versionados. Documentos Word, PowerPoint, HTML e PDF avulso são um arquivo só, guardado inteiro em cada versão.
 - Word e HTML aparecem só como texto. No texto extraído, imagens, gráficos, SmartArt, cabeçalhos, rodapés e comentários do Word ficam de fora, e os formatos antigos (`.doc`, `.ppt`) não são lidos: salve-os como `.docx`/`.pptx`.
 - O modo **Slides** é aproximado: usa as fontes instaladas no Mac (não as embutidas no `.pptx`), mede entrelinhas um pouco diferente do PowerPoint e não desenha gráficos, SmartArt nem imagens EMF/WMF. Para ver o slide fiel, use o modo **PDF**: pelo PowerPoint (Mac) ele sai idêntico; pelo LibreOffice, fontes e efeitos podem mudar.
 - No modo PDF pelo PowerPoint, a cópia abre no PowerPoint por um instante a cada versão nova, e ele precisa das duas permissões da primeira vez (controle pelo macOS e acesso à pasta de troca).

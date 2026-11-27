@@ -7,7 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, folders, latex, office
+from marga.core import actions, builds, folders, latex, office
 from marga.core.pdf import page_count
 from marga.core.versions import blob_path, doc_status, latest_version
 from marga.core.workspace import MARGA_DIR, MargaError, Workspace
@@ -111,6 +111,8 @@ def _documents(root: str) -> None:
         if doc.kind == "pdf" and status.latest and doc.root in status.latest.files:
             extra = f" · {_pdf_pages(root, status.latest.files[doc.root])} p."
         st.markdown(f"{KIND_ICON.get(doc.kind, '📄')} **{doc.id}** · {doc.name} · v{n}{extra}")
+        for job in builds.active(ws, doc.id):
+            st.caption(job.label)
         if status.dirty:
             st.caption(f"⚠️ {len(status.changed)} arquivo(s) mudaram no disco desde a v{n}")
             if st.button(f"Registrar v{n + 1}", key=f"reg_{doc.id}", type="primary"):
@@ -119,8 +121,13 @@ def _documents(root: str) -> None:
                 except MargaError as exc:
                     st.error(str(exc))
                 else:
-                    state.flash("ok", report.summary())
+                    state.flash("ok", report.summary() + _compile_new(ws, doc, report.version))
                     st.rerun(scope="app")
+
+
+def _compile_new(ws: Workspace, doc, version) -> str:
+    """Começa a compilar, em segundo plano, a versão que acabou de entrar (só LaTeX); devolve o fim do aviso."""
+    return " · compilando em segundo plano" if builds.submit(ws, doc, version) is not None else ""
 
 
 @st.cache_data(max_entries=256, show_spinner=False)
@@ -132,12 +139,15 @@ def _size(nbytes: int) -> str:
     return f"{nbytes / 1024**2:.1f} MB".replace(".", ",") if nbytes >= 1024**2 else f"{max(1, nbytes // 1024)} KB"
 
 
-def _added(doc, clear: list[str] | None = None) -> None:
-    """Depois de adicionar: limpa os campos, mostra o documento na coluna da esquerda e avisa."""
+def _added(ws: Workspace, doc, clear: list[str] | None = None) -> None:
+    """Depois de adicionar: limpa os campos, mostra o documento na coluna da esquerda, começa a compilar (LaTeX)
+    e avisa."""
     for key in clear or []:
         state.request(key, "")
     state.request("L_doc", doc.id)
-    state.flash("ok", f"{doc.label} adicionado · {doc.kind_label} · v1")
+    first = latest_version(ws, doc.id)
+    tail = _compile_new(ws, doc, first) if first else ""
+    state.flash("ok", f"{doc.label} adicionado · {doc.kind_label} · v1{tail}")
     st.rerun()
 
 
@@ -179,7 +189,8 @@ def _update_from_zip(ws: Workspace, doc_id: str, source, filename: str, size: in
             st.error(str(exc))
             return False
     state.request("L_doc", doc_id)
-    state.flash("ok", update.summary())
+    tail = _compile_new(ws, ws.get_doc(doc_id), update.report.version) if update.report else ""
+    state.flash("ok", update.summary() + tail)
     return True
 
 
@@ -208,7 +219,7 @@ def _add_upload(ws: Workspace) -> None:
                 st.error(str(exc))
                 return
         ss["add_up_n"] = n + 1
-        _added(doc)
+        _added(ws, doc)
 
 
 def _add_found(ws: Workspace) -> None:
@@ -226,7 +237,7 @@ def _add_found(ws: Workspace) -> None:
         except MargaError as exc:
             st.error(str(exc))
             return
-        _added(doc, clear=["add_ws_name"])
+        _added(ws, doc, clear=["add_ws_name"])
 
 
 def _add_from_disk(ws: Workspace) -> None:
@@ -250,7 +261,7 @@ def _add_from_disk(ws: Workspace) -> None:
             except MargaError as exc:
                 st.error(str(exc))
                 return
-        _added(doc, clear=["add_disk_path", "add_disk_name"])
+        _added(ws, doc, clear=["add_disk_path", "add_disk_name"])
 
 
 def _settings(ws: Workspace) -> None:

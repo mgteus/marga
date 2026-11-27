@@ -1,4 +1,4 @@
-"""Aba Revisão: duas colunas (fonte, slides ou PDF), seleção, comentários, links e compilação paralela."""
+"""Aba Revisão: duas colunas (fonte, slides ou PDF), seleção, comentários, links e compilação em segundo plano."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from marga.core import actions, latex, office, outline, slidepdf, slides, synctex
+from marga.core import actions, builds, latex, office, outline, slidepdf, slides, synctex
 from marga.core import pdf as pdfmod
 from marga.core.anchors import anchor_from_offsets, anchor_offsets, lines_anchor, make_anchor
 from marga.core.diffing import DiffRow, diff_rows
@@ -108,7 +108,7 @@ def _pdf_outline(root: str, sha: str) -> dict:
 @st.cache_data(max_entries=128, show_spinner="Localizando as seções no PDF…")
 def _build_outline(root: str, doc_id: str, n: int, main: str, pdf: str, mtime: float) -> dict:
     ws = Workspace(root)
-    result = latex.load_result(ws, doc_id, n)
+    result = latex.load_pdf(ws, doc_id, n)  # o PDF completo ou, enquanto ele não sai, a prévia (mesmo layout)
     return outline.for_build(ws, ws.get_doc(doc_id), get_version(ws, doc_id, n), result).to_dict()
 
 
@@ -187,7 +187,8 @@ def render(ws: Workspace) -> None:
     ss.setdefault("show_right", True)
     bar = st.columns([2.1, 2.2, 2.8, 2.5, 3.8], vertical_alignment="center")
     force = bar[0].button("▶ Compilar visíveis", type="primary", disabled=not latex.can_compile(),
-                          help="Compila ao mesmo tempo os documentos LaTeX mostrados nas colunas.")
+                          help="Compila de novo, em segundo plano, os documentos LaTeX mostrados nas colunas. "
+                               "Versões novas já compilam sozinhas ao serem registradas.")
     bar[1].toggle("Diff vs anterior", key="show_diff")
     bar[2].toggle("Comentários no texto", key="show_threads")
     bar[3].toggle("Coluna da direita", key="show_right",
@@ -222,8 +223,30 @@ def render(ws: Workspace) -> None:
         with body[1].container(key="mg_side"):
             _selection_panel(ws, views[0])
             _annotation_list(ws, views[0])
+    watching = {(v.doc.id, v.n): job.state for v in views if v.mode == "PDF" and v.doc.kind == "latex"
+                and (job := builds.status(ws, v.doc.id, v.n)) is not None and job.running}
+    if watching:
+        _watch_builds(str(ws.root), tuple(sorted(watching.items())))
     st.divider()
     _link_form(ws, views)
+
+
+@st.fragment(run_every=2)
+def _watch_builds(root: str, watching: tuple) -> None:
+    """Sem nada visível: a cada 2 s, confere as compilações mostradas nas colunas e recarrega a página quando uma
+    muda (prévia pronta, PDF completo, erro). Só existe enquanto alguma coluna espera uma compilação."""
+    ws = Workspace(root)
+    for (doc_id, n), before in watching:
+        job = builds.status(ws, doc_id, n)
+        now = job.state if job is not None else None
+        if now == before:
+            continue
+        if now == "pronto" and job.result is not None:
+            res = job.result
+            state.flash("ok" if res.ok else "warn",
+                        f"{doc_id} v{n}: PDF completo em {res.duration:.0f} s" if res.ok
+                        else f"{doc_id} v{n}: compilação terminou com {len(res.errors)} erro(s)")
+        st.rerun(scope="app")
 
 
 def visible_sides() -> tuple[str, ...]:
@@ -268,30 +291,23 @@ def _controls(ws: Workspace, side: str, docs: list[Document], container) -> View
 
 
 def _compile(ws: Workspace, views: list[View], force: bool) -> None:
-    jobs: list[tuple[Document, Version]] = []
+    """Põe na fila de compilação (em segundo plano) as versões LaTeX das colunas no modo PDF que ainda não têm
+    PDF; com ▶ Compilar visíveis, todas as versões LaTeX visíveis, de novo. Nada aqui espera a compilação."""
+    queued: list[str] = []
     seen: set[tuple[str, int]] = set()
     for v in views:
         if v.doc.kind != "latex" or (v.doc.id, v.n) in seen:
             continue
-        if not force and (v.mode != "PDF" or latex.load_result(ws, v.doc.id, v.n) is not None):
-            continue
+        if not force and (v.mode != "PDF" or builds.status(ws, v.doc.id, v.n) is not None):
+            continue  # no modo Fonte, já compilada, compilando ou com erro (que só ▶ tenta de novo)
         seen.add((v.doc.id, v.n))
-        jobs.append((v.doc, v.version))
-    if not jobs:
-        return
-    if not latex.can_compile():
+        if builds.submit(ws, v.doc, v.version, force=force) is not None:
+            queued.append(f"{v.doc.id} v{v.n}")
+    if force and not latex.can_compile():
         st.warning("latexmk não está no PATH; instale o TeX Live para compilar.")
-        return
-    names = " e ".join(f"{d.id} v{ver.n}" for d, ver in jobs)
-    with st.spinner(f"Compilando {names}{' em paralelo' if len(jobs) > 1 else ''}… "
-                    "(documentos com muitas figuras levam alguns minutos na primeira vez)"):
-        results = latex.compile_many(ws, jobs, force=force)
-    for (doc, ver), res in zip(jobs, results):
-        if isinstance(res, Exception):
-            st.error(f"{doc.label} v{ver.n}: {res}")
-        elif force:
-            msg = "compilado" if res.ok else f"{len(res.errors)} erro(s)"
-            state.flash("ok" if res.ok else "warn", f"{doc.id} v{ver.n}: {msg} em {res.duration:.1f} s")
+    elif force and queued:
+        st.toast(f"Compilando {' e '.join(queued)} em segundo plano: a prévia sem figuras aparece em segundos.",
+                 icon="⏳")
 
 
 # ================================================================ fonte
@@ -440,7 +456,7 @@ def _jump_to_section(ws: Workspace, doc_id: str, n: int, key: str, key_file: str
 def _section_page(ws: Workspace, doc_id: str, n: int, file: str, line: int) -> int | None:
     if ws.get_doc(doc_id).kind != "latex":
         return None
-    result = latex.load_result(ws, doc_id, n)
+    result = latex.load_pdf(ws, doc_id, n)
     if result is None or not result.has_pdf:
         return None
     try:
@@ -641,6 +657,37 @@ def _shift_page(key: str, delta: int, total: int) -> None:
     st.session_state[key] = max(1, min(total, int(st.session_state.get(key, 1)) + delta))
 
 
+def _latex_pdf(ws: Workspace, v: View) -> latex.CompileResult | None:
+    """O que o painel PDF mostra de uma versão LaTeX: o PDF completo, a prévia sem figuras enquanto ele não sai,
+    ou um aviso (e None)."""
+    job = builds.status(ws, v.doc.id, v.n)
+    if job is not None and job.running:
+        preview = latex.load_preview(ws, v.doc.id, v.n) if job.state == "previa" else None
+        if preview is None or not preview.has_pdf:
+            what = "Na fila para compilar" if job.state == "fila" else "Compilando"
+            st.info(f"⏳ {what} a v{v.n}… a prévia sem figuras aparece em alguns segundos.")
+            return None
+        st.caption(f"👁️ Prévia sem figuras da v{v.n} · as figuras ficam prontas em instantes, e o PDF completo "
+                   "entra no lugar sozinho")
+        return preview
+    if job is not None and job.state == "erro":
+        st.error(f"Não consegui compilar a v{v.n}: {job.error}")
+        return None
+    if job is None or job.result is None:
+        st.info("Ainda não compilado. Clique em ▶ Compilar visíveis." if latex.can_compile()
+                else "latexmk não está no PATH; instale o TeX Live para compilar.")
+        return None
+    result = job.result
+    _compile_status(ws, v, result)
+    if result.has_pdf:
+        return result
+    preview = latex.load_preview(ws, v.doc.id, v.n)
+    if preview is not None and preview.has_pdf:
+        st.caption("👁️ Prévia sem figuras: a compilação completa não gerou o PDF.")
+        return preview
+    return None
+
+
 def _pdf_panel(ws: Workspace, v: View) -> None:
     ss = st.session_state
     doc = v.doc
@@ -656,16 +703,18 @@ def _pdf_panel(ws: Workspace, v: View) -> None:
         if pdf_path is None:
             return
     else:
-        result = latex.load_result(ws, doc.id, v.n)
+        result = _latex_pdf(ws, v)
         if result is None:
-            st.info("Ainda não compilado. Clique em ▶ Compilar visíveis.")
-            return
-        _compile_status(ws, v, result)
-        if not result.has_pdf:
             return
         pdf_path = Path(result.pdf)
 
-    mtime = pdf_path.stat().st_mtime
+    try:
+        mtime = pdf_path.stat().st_mtime
+    except FileNotFoundError:
+        if doc.kind != "latex":
+            raise
+        st.info(f"⏳ Compilando a v{v.n}…")  # a prévia sumiu entre a leitura e o desenho: uma compilação recomeçou
+        return
     total = _page_count(str(pdf_path), mtime)
     key_page = f"{v.side}_page_{doc.id}_{v.n}"
     if not isinstance(ss.get(key_page), int) or not 1 <= ss[key_page] <= total:
@@ -961,7 +1010,8 @@ def _error_to_comment(ws: Workspace, doc_id: str, n: int, file: str, line: int, 
 def _compile_status(ws: Workspace, v: View, result) -> None:
     errs, warns = result.errors, result.warnings
     if result.ok:
-        st.caption(f"✅ PDF da v{v.n} · {result.engine} · {result.duration:.1f} s · {len(warns)} aviso(s)")
+        early = f" (prévia em {result.preview_seconds:.1f} s)" if result.preview_seconds is not None else ""
+        st.caption(f"✅ PDF da v{v.n} · {result.engine} · {result.duration:.1f} s{early} · {len(warns)} aviso(s)")
     else:
         st.caption(f"❌ v{v.n} · {len(errs)} erro(s) · {len(warns)} aviso(s)" + ("" if result.has_pdf else " · sem PDF"))
     if not errs and not warns:
@@ -1055,7 +1105,7 @@ def page_of_anchor(ws: Workspace, doc: Document, anchor: Anchor) -> int | None:
         return anchor.page or page_of_line(ws, doc, version, anchor.file, anchor.start_line)
     if doc.kind != "latex" or not synctex.available():
         return None
-    result = latex.load_result(ws, doc.id, anchor.version)
+    result = latex.load_pdf(ws, doc.id, anchor.version)  # a prévia sem figuras serve: o layout é o mesmo
     if result is None or not result.has_pdf:
         return None
     src = Path(result.src_dir) / os.path.relpath(anchor.file, doc.root)

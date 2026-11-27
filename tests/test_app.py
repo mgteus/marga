@@ -1,12 +1,14 @@
 """Smoke test do app Streamlit (renderiza todas as abas sem exceções)."""
 
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pymupdf
+import pytest
 from streamlit.testing.v1 import AppTest
 
-from marga.core import actions, export, folders, unrequested
+from marga.core import actions, builds, export, folders, latex, unrequested
 from marga.core.anchors import anchor_from_offsets, lines_anchor
 from marga.core.versions import latest_version, load_versions, version_text
 from marga.core.workspace import Workspace
@@ -258,3 +260,79 @@ def test_annotation_list_sorts_by_position_or_by_id(demo_ws, monkeypatch):
     at.run()
     assert not at.exception, at.exception
     assert listed() == ["c1", "c2", "c3"]
+
+
+def _fake_submit(calls: list):
+    def submit(ws, doc, version, force=False):
+        calls.append((doc.id, version.n, force))
+        return builds.BuildStatus(str(ws.root), doc.id, version.n, "fila")
+    return submit
+
+
+@pytest.mark.skipif(not latex.can_compile(), reason="latexmk ausente")
+def test_pdf_panel_waits_then_shows_the_preview_then_the_full_pdf(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "artigo")
+    version = latest_version(demo_ws, doc.id)
+    latex.compile_version(demo_ws, doc, version)  # deixa a prévia e o PDF completo no disco
+    job = {"now": builds.BuildStatus(str(demo_ws.root), doc.id, version.n, "compilando")}
+    monkeypatch.setattr(builds, "status", lambda ws, d, n: replace(job["now"]) if d == doc.id else None)
+    monkeypatch.setattr(builds, "submit", _fake_submit([]))
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.session_state["L_doc"], at.session_state[f"L_mode_{doc.id}"] = doc.id, "PDF"
+    at.session_state["show_right"] = False
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Compilando a v1" in i.value for i in at.main.info)
+
+    job["now"] = replace(job["now"], state="previa")
+    at.run()
+    assert not at.exception, at.exception
+    assert any("Prévia sem figuras da v1" in c.value for c in at.main.caption)
+    assert not any("Compilando" in i.value for i in at.main.info)
+
+    job["now"] = replace(job["now"], state="pronto", result=latex.load_result(demo_ws, doc.id, version.n))
+    at.run()
+    assert not at.exception, at.exception
+    assert any(c.value.startswith("✅ PDF da v1") and "prévia em" in c.value for c in at.main.caption)
+    assert not any("Prévia sem figuras" in c.value for c in at.main.caption)
+
+
+def test_registering_a_version_starts_compiling_it(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "artigo")
+    intro = demo_ws.root / "artigo" / "sections" / "introducao.tex"
+    intro.write_text(intro.read_text(encoding="utf-8") + "\nMais uma frase.\n", encoding="utf-8")
+    calls: list = []
+    monkeypatch.setattr(builds, "submit", _fake_submit(calls))
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+    at.button(key=f"reg_{doc.id}").click().run()
+    assert not at.exception, at.exception
+    assert (doc.id, 2, False) in calls
+    assert any("compilando em segundo plano" in t.value for t in at.toast)
+
+
+def test_compile_button_queues_the_visible_versions_without_waiting(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "artigo")
+    calls: list = []
+    monkeypatch.setattr(latex, "can_compile", lambda: True)
+    monkeypatch.setattr(builds, "submit", _fake_submit(calls))
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+    next(b for b in at.button if b.label == "▶ Compilar visíveis").click().run()
+    assert not at.exception, at.exception
+    assert (doc.id, 1, True) in calls
+    assert any("em segundo plano" in t.value for t in at.toast)
+
+
+def test_opening_a_latex_version_in_pdf_mode_queues_its_compile(demo_ws, monkeypatch):
+    doc = actions.add_document(demo_ws, "artigo")  # um documento só: A-Fonte à esquerda, A-PDF à direita
+    calls: list = []
+    monkeypatch.setattr(builds, "submit", _fake_submit(calls))
+    monkeypatch.setenv("MARGA_WORKSPACE", str(demo_ws.root))
+    at = AppTest.from_file(APP, default_timeout=180)
+    at.run()
+    assert not at.exception, at.exception
+    assert at.session_state[f"R_mode_{doc.id}"] == "PDF" and calls == [(doc.id, 1, False)]
